@@ -131,6 +131,7 @@ struct TObj{
     Size2i    windowSize;   // Optimal window size for fft performance
     Size2d          size;   // Current size of the object
     Point2f       center;   // Center location of the object
+	Point2f   realCenter;   // the center location estimated from 2d discrete function
     vector<Mat> model_xf;   // Fourier Domain: model of the tracking obj.
     Mat     model_alphaf;   // Fourier Domain: Kernel Ridge Regression.
 };
@@ -184,11 +185,45 @@ public:
         else
             input.copyTo(output);
     }
+
+	static float arctan2(double x, double y)
+	{
+		double angle;
+		if (x == 0)
+			if (y > 0)
+			{
+				return CV_PI / 2;
+			}
+			else
+			{
+				return -CV_PI / 2;
+			}
+		else
+		{
+			if (x > 0)
+			{
+				return atan(y / x);
+			}
+			else
+			{
+				return atan(y / x) + CV_PI;
+			}
+		}
+	}
     
     double getScale()
     {
         return _scale;
     }
+
+	void setWeights(vector<float> &weight)
+	{
+		_weights = weight;
+	}
+	vector<float> getWeights()
+	{
+		return _weights;
+	}
     
     
     void extractPoints(const Mat &frame,
@@ -212,16 +247,17 @@ public:
         if (_pts.size() > 0)
         {
             vector<Point2f> to;
-            flowForwardBackward(_curr, tmp, _pts, to, _params);
+            flowForwardBackward(_curr, tmp, _pts, to, _params,_weights);
             _scale = transform(_pts, to, _weights, _params);
-			//_scale = transform2(_pts, to, center,shift,_weights);
+			//float angle = transform2(_pts, to, center,shift,_weights);
+			//cout << angle*180/CV_PI << endl;
             int inliers = 0, outliers = 0;
             for (size_t i = 0; i < to.size(); ++i)
             {
                 Point2f _tmp(_pts[i].x - (to[i].x + shift.x * _scale),
                              _pts[i].y - (to[i].y + shift.y * _scale));
                 
-                if (norm(_tmp) < _params.ptsThreshold*3)
+                if (norm(_tmp) < _params.ptsThreshold*2)
                     inliers++;
                 else
                     outliers++;
@@ -256,11 +292,12 @@ public:
 		float *gaussianWeights = new float[width*height];
 		uchar * gaussianData = gaussianWindow.data;
 		// hann window
+		/*
         for (size_t i = 0; i < width; ++i )
             w[i] = .5 * ( 1. - cos((2.* CV_PI* i)/(width - 1)));
         for (size_t i = 0; i < height; ++i)
             h[i] = .5 * ( 1. - cos((2.* CV_PI* i)/(height- 1)));
-        
+        */
 		// apply gaussian window to it
 		
 		for (size_t i = 0; i < width; ++i)
@@ -273,7 +310,7 @@ public:
 			
 
         int POINTS = 100;
-        double wTHRESHOLD = 0.75;//let more points get into decision
+        double wTHRESHOLD = 0.6;//let more points get into decision
         
         RNG rng(0xFFFFFFFF);
         Point tl(max(0.0,patch.cols/2.0 - floor(size.width/2.0)),
@@ -300,7 +337,7 @@ public:
         {
             int _x_ = floor(_tmp[i].x);
             int _y_ = floor(_tmp[i].y);
-            //double _weight =w[_x_] * h[_y_];
+           // double _weight =w[_x_] * h[_y_];
 			double _weight = gaussianWeights[_y_*width + _x_];
             if (_weight < wTHRESHOLD) continue;
             weights.push_back(_weight);
@@ -343,7 +380,8 @@ public:
                                     const Mat &J,
                                     vector<Point2f> &from,
                                     vector<Point2f> &to,
-                                    const KFlowConfigParams &p);
+                                    const KFlowConfigParams &p,
+	                                vector <float> &weights);
     
     
     /*
@@ -581,7 +619,8 @@ private:
     static void  getPatch(const Mat& image,
                           const Point2f &loc,
                           const Size &sz,
-                          Mat &output);
+                          Mat &output
+	                      );
     
     // GAUSSIAN_SHAPED_LABELS
     //    Gaussian-shaped labels for all shifts of a sample.

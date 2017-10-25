@@ -95,15 +95,17 @@ void KTrackers::processFrame(const cv::Mat &frame)
     
     Size2d tsz(min((double)sz.width, _target.size.width/_params.cell_size),
                min((double)sz.height,_target.size.height/_params.cell_size));
-    
     if (_target.initiated)
     {
         Point2f shift;
         KTrackers::getPatch(frame, _target.center, _target.windowSize, patch);// patch is the windowed target (x2.5 scale) , if near the edge, the patch will randomly get so,e pixel
-		cv::imshow("patch", patch);
-        KTrackers::hannWindow(sz, filter);
+		//cv::imshow("patch", patch);
 		//KTrackers::writeMatData(filter);
-        KTrackers::getFeatures(patch, _params, filter, zf);
+		if(_params.scale)
+			KTrackers::getFeatures(patch, _params,_gaussianFilter, zf);
+		else
+			KTrackers::hannWindow(sz, filter);
+
         KTrackers::fft2(zf, _params);
         
         switch (_params.kernel_type)
@@ -127,7 +129,7 @@ void KTrackers::processFrame(const cv::Mat &frame)
         KTrackers::fastDetection(_target.model_alphaf, kzf, shift);
         Point2f _shift(_params.cell_size * Point2f(shift.x, shift.y));
         _target.center = _target.center + _shift;
-		//cout << "shift: " << _shift << endl;
+		//cout << "center: " << _target.center << endl;
         if (_params.scale)
         {
             _flow.processFrame(patch, filter, _target.size, _shift,_target.center);
@@ -553,10 +555,10 @@ double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point2f 
 			*(spaData+tempi*spatial.cols+tempj) = *(originData + i*spatial.cols + j);
 		}
    
-	minMaxLoc( reshapeSpatial, &minVal, &maxVal, &minLoc, &maxLoc);//the spatial response should be reshaped so that it will looks better and better for our work.
-	cv::imshow("1",reshapeSpatial);
+	//minMaxLoc(spatial, &minVal, &maxVal, &minLoc, &maxLoc);
+minMaxLoc( reshapeSpatial, &minVal, &maxVal, &minLoc, &maxLoc);//the spatial response should be reshaped so that it will looks better and better for our work.
 	KTrackers::findLocalMaximum(reshapeSpatial, maxLoc.x, maxLoc.y, realLoc);
-	//cout << "(x,y): " << maxLoc.x << maxLoc.y << endl;
+	
 	if (spatial.cols % 2 == 0)
 	{
 		maxLoc.x -= spatial.cols / 2;
@@ -574,16 +576,17 @@ double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point2f 
 		maxLoc.y -= (spatial.rows / 2 + 1);
 	}
 	//cout << "(x,y): " << maxLoc.x << maxLoc.y << endl;
-	/*
-    if (maxLoc.y > kzf.rows / 2)
-        maxLoc.y -= kzf.rows;
-    if (maxLoc.x > kzf.cols / 2)
-        maxLoc.x -= kzf.cols;
-		*/
-	//cout << "(x,y): " << maxLoc.x << maxLoc.y << endl;
-	//KTrackers::findLocalMaximum(reshapeSpatial, maxLoc.x, maxLoc.y,realLoc);
+	
+	
+    //if (maxLoc.y > kzf.rows / 2)
+    //    maxLoc.y -= kzf.rows;
+   // if (maxLoc.x > kzf.cols / 2)
+     //   maxLoc.x -= kzf.cols;
+	//shift = maxLoc;
+	
 	shift.x = maxLoc.x + realLoc.x;
 	shift.y = maxLoc.y + realLoc.y;
+	//cout << "(x,y): " << shift.x << shift.y << endl;
     return maxVal;
 }
 
@@ -652,10 +655,10 @@ void KTrackers::findLocalMaximum(const Mat &response, const int x, const int y, 
 	H_inverse[3] = parameter*H[0];
 
 	sx =-( H_inverse[0] * dx + H_inverse[1] * dy);
-	sy =-( H_inverse[1] * dx + H_inverse[1] * dy);
+	sy =-( H_inverse[2] * dx + H_inverse[3] * dy);
 	realLoc.x = sx;
 	realLoc.y = sy;
-	
+	//cout << realLoc << endl;
 
 }
 
@@ -789,9 +792,7 @@ void KTrackers::getPatch(const Mat& image,const Point2f &loc, const Size &sz, Ma
     Rect tRoi(loc.x - floor(sz.width/2), loc.y - floor(sz.height/2),
               sz.width, sz.height);
     Rect fRoi = iRoi & tRoi;
-
     output.create(sz, image.type());
-    
     
     int top = 0, left = 0 , bottom = 0, right = 0;
     
@@ -1206,18 +1207,20 @@ void KFlow::flowForwardBackward(const Mat &I,
                                const Mat &J,
                                vector<Point2f> &from,
                                vector<Point2f> &to,
-                               const KFlowConfigParams &p)
+                               const KFlowConfigParams &p,
+                               vector<float> &weights)
 {
     vector<Point2f> points;
     vector<uchar>   accept[2];
     vector<float>      err[2]; //valuesNCC err[0]  //errorFB err[1]
-    
+	vector<float> newWeights[2];//record the weights that match the good points
+
     calcOpticalFlowPyrLK(I, J, from, to, accept[0], err[0], p.winLK, p.level, p.criteria);//CV_LKFLOW_INITIAL_GUESSES);
     calcOpticalFlowPyrLK(J, I, to, points, accept[1], err[1], p.winLK, p.level, p.criteria);//CV_LKFLOW_INITIAL_GUESSES | CV_LKFLOW_PYR_A_READY | CV_LKFLOW_PYR_B_READY);
     
     for (size_t i = 0; i < from.size(); i++)
     {
-        accept[0][i] = accept[0][i] && accept[1][i];
+        accept[0][i] = accept[0][i] && accept[1][i];// both forward and backward can track the points
     }
     
     NCC(I,J, from, to, accept[0], err[0], p);
@@ -1230,6 +1233,7 @@ void KFlow::flowForwardBackward(const Mat &I,
         {
             from[goodPts] = from[i];
             to[goodPts] = to[i];
+			newWeights[0].push_back(weights[i]);
             //groups[goodPts] = groups[i];
             err[0][goodPts] = err[0][i];
             err[1][goodPts] = err[1][i];
@@ -1238,6 +1242,7 @@ void KFlow::flowForwardBackward(const Mat &I,
     }
     from.resize(goodPts);
     to.resize(goodPts);
+	
     //groups.resize(goodPts);
     err[0].resize(goodPts);
     err[1].resize(goodPts);
@@ -1256,12 +1261,15 @@ void KFlow::flowForwardBackward(const Mat &I,
             {
                 from[goodPts] = from[i];
                 to[goodPts] = to[i];
+				newWeights[1].push_back(newWeights[0][i]);
                 //groups[goodPts] = groups[i];
                 goodPts++;
             }
         }
     from.resize(goodPts);
     to.resize(goodPts);
+	weights = newWeights[1];
+	cout << weights.size()<< endl;
     //groups.resize(goodPts);
 }
 
@@ -1431,11 +1439,11 @@ double KFlow::transform(const vector<Point2f> &start,
     vector<float> scales;
     for (int i = pStart; i < (pStart+ size); i++)
     {
-        //float w1 = weights[i];
-		float w = weights[i];
+        float w1 = weights[i];
+		//float w = weights[i];
         for (int j = i + 1; j < (pStart+ size); j++)
         {
-			//float w2 = weights[j];
+			float w2 = weights[j];
 			Point2f diffST = start[i] - start[j];
             Point2f diffTS = tracked[i] - tracked[j];
             float dST = norm(diffST);
@@ -1443,8 +1451,8 @@ double KFlow::transform(const vector<Point2f> &start,
             
             double ratio = dTS/dST;
             scales.push_back(ratio);
-            weightedSum += (w*(ratio));
-            sumOfWeights+= w;
+            weightedSum += (w1*w2*(ratio));
+            sumOfWeights+= w1*w2;
         }
     }
     
@@ -1461,22 +1469,39 @@ double KFlow::transform2(const vector<Point2f> &start,
 	const Point2f &shift,
 	vector<float> &weights)
 {
-	double scales=0;
+	float rotation = 0;
 	float weightsSum = 0;
+	//originCenter.x = roundf(originCenter.x);
+	//originCenter.y = roundf(originCenter.y);
+	//cout << originCenter << endl;
 	for (int i = 0; i < start.size(); i++)
 	{
 		float w = weights[i];
-		Point2f diffST = start[i] - center+shift;
-		Point2f diffTS = tracked[i] - center;
-		float dST = norm(diffST);
-		float dTS = norm(diffTS);
-		scales +=w*(dTS / dST);
-		weightsSum += w;
+		for (int j = i; j < start.size(); j++)
+		{
+			float x0, y0, x1, y1, scale, angle1, angle2, angle;
+			x0 = start[i].x - start[j].x;
+			y0 = start[i].y - start[j].y;
+			x1 = tracked[i].x - tracked[j].x;
+			y1 = tracked[i].y - tracked[j].y;
+			angle1 = arctan2(x0, y0);
+			angle2 = arctan2(x1, y1);
+			if (angle2 - angle1 > CV_PI)
+				angle = angle2 - angle1 - 2 * CV_PI;
+			else if (angle2 - angle1 < -CV_PI)
+				angle = angle2 - angle1 + 2 * CV_PI;
+			else
+				angle = angle2 - angle1;
+			rotation = rotation + w*angle;
+			cout << angle * 180 / CV_PI<<" || ";
+			weightsSum += w;
+		}
+		cout << " " << endl;
 	}
-	scales = scales / weightsSum;
-	//scales = scales / start.size();
 	
-	return scales;
+	rotation = rotation / weightsSum;
+	
+	return rotation;
 }
 
 ///*
