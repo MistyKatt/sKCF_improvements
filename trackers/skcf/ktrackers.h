@@ -46,6 +46,7 @@ struct ConfigParams{
     int   hog_orientations = 1;
     int   cell_size = 1;
     bool  scale     = false;     //Toggle for scale computation
+	bool rotation = false; //add rotation to this tracker
     
     // 0 value uses compact CCS packed format for the spectrum. DFT_COMPLEX_OUTPUT;
     //Look for OpenCV dft function flags parameter
@@ -165,6 +166,7 @@ public:
     vector<Point2f> _pts;
     vector<float> _weights;
     Mat _curr;
+	float angle=0;
     double _scale;
     
     
@@ -224,6 +226,10 @@ public:
 	{
 		return _weights;
 	}
+	double getAngle()
+	{
+		return angle;
+	}
     
     
     void extractPoints(const Mat &frame,
@@ -249,8 +255,9 @@ public:
             vector<Point2f> to;
             flowForwardBackward(_curr, tmp, _pts, to, _params,_weights);
             _scale = transform(_pts, to, _weights, _params);
-			//float angle = transform2(_pts, to, center,shift,_weights);
-			//cout << angle*180/CV_PI << endl;
+			angle = transform2(_pts, to, center,shift,_weights);
+			//angle += angle1*180/CV_PI;
+			//cout << angle << endl;
             int inliers = 0, outliers = 0;
             for (size_t i = 0; i < to.size(); ++i)
             {
@@ -495,6 +502,10 @@ public:
     {
         return _params.scale;
     }
+	double getAngle()
+	{
+		return alpha;
+	}
     
 protected:
     TObj         _target;
@@ -502,6 +513,7 @@ protected:
     KFlow        _flow;
 	Mat _gaussianFilter;//try to use it in next turn
     Point2f      _ptl;
+	double alpha=0;
     
     
 private:
@@ -640,6 +652,12 @@ private:
                                 float sigmaW,
                                 float sigmaH,
                                 Mat &filter);
+	// if the object rotate, we need to rotate the gaussian filter as well
+	static void gaussianWindowRotation(const Size &sz,
+		float sigmaW,
+		float sigmaH,
+		Mat &filter,
+		double alpha);
     
     //  Filtering window
     static void  hannWindow(const Size &sz, Mat &filter);

@@ -41,6 +41,8 @@ public:
     {
         kcf.setArea(rect);
     }
+	
+	
     
     //@Override
     void initialize(const cv::Mat &image,
@@ -85,5 +87,11 @@ public:
     {
         kcf.processFrame(frame);
     }
+	//@Override
+	double virtual getAngle()
+	{
+		return kcf.getAngle();
+	}
+
 };
 #endif

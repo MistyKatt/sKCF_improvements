@@ -78,6 +78,8 @@ public:
    * e.g.  "OpenTLD" , "CMT", etc.
    */
    string virtual getDescription() { return "default";};
+
+   double virtual getAngle()=0;
     
   /**
    * Just in case dynamic allocated memory needs to be destroyed

@@ -104,7 +104,10 @@ void KTrackers::processFrame(const cv::Mat &frame)
 		if(_params.scale)
 			KTrackers::getFeatures(patch, _params,_gaussianFilter, zf);
 		else
+		{
 			KTrackers::hannWindow(sz, filter);
+			KTrackers::getFeatures(patch, _params,filter, zf);
+		}
 
         KTrackers::fft2(zf, _params);
         
@@ -147,9 +150,13 @@ void KTrackers::processFrame(const cv::Mat &frame)
     
     float sigmaW =(float)tsz.width/(float)sz.width;
     float sigmaH =(float)tsz.height/(float)sz.height;
-    KTrackers::gaussianWindow(sz, sigmaW,sigmaH, filter);
+    //KTrackers::gaussianWindow(sz, sigmaW,sigmaH, filter);
+	alpha=alpha+_flow.getAngle();
+	cout << alpha*180/CV_PI << endl;
+	KTrackers::gaussianWindowRotation(sz, sigmaW, sigmaH, filter,alpha);
+	
 	_gaussianFilter = filter;
-	//cv::imshow("gaussian window", filter);   gaussian window will change based on the scale change
+	cv::imshow("gaussian window", _gaussianFilter);   //gaussian window will change based on the scale change
     KTrackers::gaussian_shaped_labels(sigma, sz, yf);
     KTrackers::fft2(yf, _params);
     
@@ -624,6 +631,28 @@ void  KTrackers::gaussianWindow(const Size &sz, float sigmaW, float sigmaH, Mat 
     //parallel_for_(Range(0,width * height), ParallelFunction(gauss));
     delete []w;
     delete []h;
+}
+
+void  KTrackers::gaussianWindowRotation(const Size &sz, float sigmaW, float sigmaH, Mat &filter, double alpha)
+{
+	int width = sz.width;
+	int height = sz.height;
+	filter.create(sz, CV_32FC1);//Mat::zeros(sz, CV_32FC1); no need for zero initializing
+	float wN = (float)(width - 1.) / 2.;
+	float wH = (float)(height - 1.) / 2.;
+	double cosA = cos(alpha);
+	double sinA = sin(alpha);
+	float *data = (float*)filter.data;
+	for(size_t i = 0; i < height; i++)
+		for (size_t j = 0; j < width; j++)
+		{
+			double y= (cosA*(j-wN)+sinA*(i-wH)) /  wN;
+			double x= (cosA*(i-wH)-sinA*(j-wN)) /  wH;
+			double e1 =(x)/sigmaW;
+			double e2 = (y)/sigmaH;
+			float result = exp(-.5*(e1*e1 + e2*e2));
+			data[i*width+j] = result;
+		}
 }
 
 void KTrackers::findLocalMaximum(const Mat &response, const int x, const int y, Point2d &realLoc)
@@ -1269,7 +1298,7 @@ void KFlow::flowForwardBackward(const Mat &I,
     from.resize(goodPts);
     to.resize(goodPts);
 	weights = newWeights[1];
-	cout << weights.size()<< endl;
+	//cout << weights.size()<< endl;
     //groups.resize(goodPts);
 }
 
@@ -1493,10 +1522,10 @@ double KFlow::transform2(const vector<Point2f> &start,
 			else
 				angle = angle2 - angle1;
 			rotation = rotation + w*angle;
-			cout << angle * 180 / CV_PI<<" || ";
+			//cout << angle * 180 / CV_PI<<" || ";
 			weightsSum += w;
 		}
-		cout << " " << endl;
+		//cout << " " << endl;
 	}
 	
 	rotation = rotation / weightsSum;
