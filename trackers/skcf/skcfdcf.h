@@ -31,7 +31,7 @@ private:
 public:
     SKCFDCF(KType type = KType::GAUSSIAN,
             KFeat feat = KFeat::FHOG ,
-            bool scale = false): kcf(type, feat, scale){}
+            bool scale = false, bool rotation=false): kcf(type, feat, scale, rotation){}
     
 	~SKCFDCF(void)
 	{
