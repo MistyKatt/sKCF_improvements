@@ -65,6 +65,11 @@ public:
    */
   void virtual initialize(const cv::Mat &image,
                           const cv::Rect &rect) = 0;
+
+  /*another initialize for rotation */
+  void virtual initialize(const cv::Mat &image,
+	  const cv::Rect &rect, vector<Point2f> &pts) = 0;
+
   /**
    * This should be called every time after the tracker is initialized.
    * The image is the current frame being processed.

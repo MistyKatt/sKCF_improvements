@@ -56,6 +56,7 @@ class RectSelectArea
     int _state; /**< different states of a selection area: 0, 1, 2*/
 public:
     vector<Point2f> _loc;
+	vector<Point2f> pts;//record rotated Rectangle corners
     /**
      * Default constructor
      */
@@ -83,6 +84,8 @@ public:
      * Return the Rectangular area defined by the two corners
      */
     Rect getBoundingBox();
+
+	void setCorner(int i, float x, float y);
 };
 
 /**

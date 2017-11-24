@@ -27,6 +27,7 @@ void KTrackers::setArea(const RotatedRect &rect)
 	_target.initiated = false;
 	_target.size = rect.size;
 	_target.center = rect.center;
+	alpha = rect.angle;
 	//int w = getOptimalDFTSize(floor(_target.size.width  * ( 1 + _params.padding)));//getOptimalDFTSize
 	//int h = getOptimalDFTSize(floor(_target.size.height * ( 1 + _params.padding)));//getOptimalDFTSize
 	int w = (floor(_target.size.width  * (1 + _params.padding)));//getOptimalDFTSize
@@ -39,7 +40,7 @@ void KTrackers::setArea(const RotatedRect &rect)
 void KTrackers::getTrackedArea(vector<Point2f> &pts)
 {
 	pts.resize(4);
-	RotatedRect area(_target.center, _target.size, 0);
+	RotatedRect area(_target.center, _target.size, alpha);
 	area.points(&pts[0]);
 
 }
@@ -97,17 +98,17 @@ void KTrackers::processFrame(const cv::Mat &frame)
 		min((double)sz.height, _target.size.height / _params.cell_size));
 	if (_target.initiated)
 	{
-		Point shift;
+		Point2f shift;
 		KTrackers::getPatch(frame, _target.center, _target.windowSize, patch);// patch is the windowed target (x2.5 scale) , if near the edge, the patch will randomly get so,e pixel
 																			  //cv::imshow("patch", patch);
 																			  //KTrackers::writeMatData(filter);
-		//if (_params.scale || _params.rotation)
-			//KTrackers::getFeatures(patch, _params, _gaussianFilter, zf);
-		//else
-		//{
+		if (_params.scale || _params.rotation)
+			KTrackers::getFeatures(patch, _params, _gaussianFilter, zf);
+		else
+		{
 			KTrackers::hannWindow(sz, filter);
 			KTrackers::getFeatures(patch, _params, filter, zf);
-		//}
+		}
 
 		KTrackers::fft2(zf, _params);
 
@@ -138,8 +139,6 @@ void KTrackers::processFrame(const cv::Mat &frame)
 			_flow.processFrame(patch, filter, _target.size, _shift, _target.center);
 			double scale = _flow.getScale();
 			//cout << scale << endl;
-			if (_target.center.x > frame.rows)
-				scale = 1.0;
 			if (!_params.scale)
 				scale = 1.0;
 			//cout << scale << " ";
@@ -161,12 +160,12 @@ void KTrackers::processFrame(const cv::Mat &frame)
 		KTrackers::gaussianWindow(sz, sigmaW, sigmaH, filter);
 	else
 	{
-		alpha = alpha + _flow.getAngle();
+		alpha = alpha + _flow.getAngle()*180/CV_PI;
 		//cout << alpha * 180 / CV_PI << endl;
-		KTrackers::gaussianWindowRotation(sz, sigmaW, sigmaH, filter, alpha);
+ 		KTrackers::gaussianWindowRotation(sz, sigmaW, sigmaH, filter, alpha);
 	}
 	_gaussianFilter = filter;
-	//cv::imshow("gaussian window", _gaussianFilter);   //gaussian window will change based on the scale change
+	   //gaussian window will change based on the scale change
 	KTrackers::gaussian_shaped_labels(sigma, sz, yf);
 	KTrackers::fft2(yf, _params);
 
@@ -532,23 +531,24 @@ void KTrackers::learn(vector<Mat> &modelXf, const vector<Mat> &xf,
 	weightPara(Range(0, xf.size()));
 }
 
-double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point &maxLoc)
+double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point2f &shift)
 {
+	/*
 	Mat response, spatial;
 	mulSpectrums(modelAlphaF, kzf, response, 0, false);
 	idft(response, spatial, DFT_SCALE | DFT_REAL_OUTPUT);
-	double minVal; double maxVal; Point minLoc;
+	double minVal; double maxVal; Point minLoc; Point maxLoc;
 	minMaxLoc(spatial, &minVal, &maxVal, &minLoc, &maxLoc);
 
 	if (maxLoc.y > kzf.rows / 2)
 		maxLoc.y -= kzf.rows;
 	if (maxLoc.x > kzf.cols / 2)
 		maxLoc.x -= kzf.cols;
-
+	shift = maxLoc;
 	return maxVal;
+	*/
 	
 	
-	/*
 	Mat response, spatial;
 	mulSpectrums(modelAlphaF, kzf, response, 0, false);
 	idft(response, spatial, DFT_SCALE | DFT_REAL_OUTPUT);
@@ -622,7 +622,7 @@ double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point &m
 	shift.y = maxLoc.y + realLoc.y;
 	//cout << "(x,y): " << shift.x << shift.y << endl;
 	return maxVal;
-	*/
+	
 }
 
 void  KTrackers::gaussianWindow(const Size &sz, float sigmaW, float sigmaH, Mat &filter)
@@ -668,6 +668,7 @@ void  KTrackers::gaussianWindowRotation(const Size &sz, float sigmaW, float sigm
 	filter.create(sz, CV_32FC1);//Mat::zeros(sz, CV_32FC1); no need for zero initializing
 	float wN = (float)(width - 1.) / 2.;
 	float wH = (float)(height - 1.) / 2.;
+	alpha = alpha / 180 * CV_PI;
 	double cosA = cos(alpha);
 	double sinA = sin(alpha);
 	float *data = (float*)filter.data;
@@ -1297,7 +1298,6 @@ void KFlow::flowForwardBackward(const Mat &I,
 			goodPts++;
 		}
 	}
-	cout << goodPts << endl;
 	if (goodPts == 0)
 	{
 		return;
@@ -1336,7 +1336,7 @@ void KFlow::flowForwardBackward(const Mat &I,
 		from.resize(goodPts);
      	to.resize(goodPts);
 	
-	//weights = newWeights[1];
+	weights = newWeights[1];
 	//cout << weights.size()<< endl;
 	//groups.resize(goodPts);
 }
@@ -1512,25 +1512,25 @@ double KFlow::transform(const vector<Point2f> &start,
 	vector<float> scales;
 	for (int i = pStart; i < (pStart + size); i++)
 	{
-		//float w1 = weights[i];
-		float w = weights[i];
+		float w1 = weights[i];
+		//float w = weights[i];
 		for (int j = i + 1; j < (pStart + size); j++)
 		{
-			//float w2 = weights[j];
+			float w2 = weights[j];
 			Point2f diffST = start[i] - start[j];
 			Point2f diffTS = tracked[i] - tracked[j];
 			float dST = norm(diffST);
 			float dTS = norm(diffTS);
 			count++;
 			double ratio = dTS / dST;
-			if (ratio > 1)
-				pos++;
-			if (ratio < 1)
-				neg++;
+			//if (ratio > 1)
+				//pos++;
+			//if (ratio < 1)
+				//neg++;
 			average += ratio;
 			scales.push_back(ratio);
-			weightedSum += (w*(ratio));
-			sumOfWeights += w;
+			weightedSum += (w1*w1*w2*w2*(ratio));
+			sumOfWeights += w1*w1*w2*w2;
 		}
 	}
 	average = average / count;
@@ -1539,15 +1539,13 @@ double KFlow::transform(const vector<Point2f> &start,
 		var += (scales[i] - average)*(scales[i] - average);
 	}
 	var = var / count;
-	if (var > 0.001)
-		return 1.0;
-	if (pos + neg < 0.5*count)
+	if (var > 0.01)
 		return 1.0;
 
 	float fSc = (sumOfWeights > 0) ? weightedSum / sumOfWeights : 1.f;
 	float fSc2 = (scales.size() > 0) ?
 		getMedianUnmanaged(&scales[0], (int)scales.size()) : 1.f;
-
+	
 	return (fSc + fSc2) / 2;
 }
 
@@ -1571,7 +1569,7 @@ double KFlow::transform2(const vector<Point2f> &start,
 	for (int i = 0; i < start.size(); i++)
 	{
 		float w1 = weights[i];
-		for (int j = i; j < start.size(); j++)
+		for (int j = i+1; j < start.size(); j++)
 		{
 			float x0, y0, x1, y1, scale, angle1, angle2, angle;
 			float w2 = weights[j];
@@ -1588,6 +1586,7 @@ double KFlow::transform2(const vector<Point2f> &start,
 				angle = angle2 - angle1 + 2 * CV_PI;
 			else
 				angle = angle2 - angle1;
+			//cout << angle << " ";
 			rotations.push_back(angle);
 			if (angle > 0)
 				pos++;
@@ -1599,19 +1598,30 @@ double KFlow::transform2(const vector<Point2f> &start,
 		}
 		//cout << " " << endl;
 	}
+	cout << "end   ";
 	average /= count;
-	for (int i = 0; i < count; i++)
+  	for (int i = 0; i < count; i++)
 	{
 		var += (rotations[i] - average)*(rotations[i] - average);
 	}
 	var /= count;
-	if (var > 0.005)
+	float test = 0;
+	float testCount = 0;
+	if (var > 0.01)
 		return 0.0;
 	
-	if (start.size()>0)//if there is no valid point, just keep the current angle
+	
+	if (rotations.size() > 0)//if there is no valid point, just keep the current angle
+	{
 		rotation = rotation / weightsSum;
+		float fSc2 =getMedianUnmanaged(&rotations[0],(int)rotations.size()) ;
+		rotation += fSc2;
+		rotation /= 2;
+		
+	}
 	else
 		rotation = 0;
+	//cout << "rotation:" << rotation<<endl;
 	return rotation;
 }
 

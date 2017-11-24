@@ -301,12 +301,12 @@ public:
 		float *gaussianWeights = new float[width*height];
 		uchar * gaussianData = gaussianWindow.data;
 		// hann window
-		
+		/*
 		for (size_t i = 0; i < width; ++i )
 		w[i] = .5 * ( 1. - cos((2.* CV_PI* i)/(width - 1)));
 		for (size_t i = 0; i < height; ++i)
 		h[i] = .5 * ( 1. - cos((2.* CV_PI* i)/(height- 1)));
-		
+		*/
 		// apply gaussian window to it
 
 		for (size_t i = 0; i < width; ++i)
@@ -316,7 +316,7 @@ public:
 				gaussianWeights[j*width + i] /= 255;
 			}
 
-
+		
 
 		int POINTS = 100;
 		double wTHRESHOLD = 0.85;//let more points get into decision
@@ -346,8 +346,8 @@ public:
 		{
 			int _x_ = floor(_tmp[i].x);
 			int _y_ = floor(_tmp[i].y);
-			 double _weight =w[_x_] * h[_y_];
-			//double _weight = gaussianWeights[_y_*width + _x_];
+			 //double _weight =w[_x_] * h[_y_];
+			double _weight = gaussianWeights[_y_*width + _x_];
 			if (_weight < wTHRESHOLD) continue;
 			weights.push_back(_weight);
 			points.push_back(_tmp[i]);
@@ -361,8 +361,8 @@ public:
 			double nY = rng.uniform((double)tl.y, (double)(br.y));
 			int _x_ = floor(nX);
 			int _y_ = floor(nY);
-			double _weight =w[_x_] * h[_y_];
-			//double _weight = gaussianWeights[_y_*width + _x_];
+			//double _weight =w[_x_] * h[_y_];
+			double _weight = gaussianWeights[_y_*width + _x_];
 			if (_weight <  wTHRESHOLD) continue;
 
 			weights.push_back(_weight);
@@ -628,7 +628,7 @@ private:
 	// the responses wrap around cyclically.
 	static double fastDetection(const Mat &modelAlphaF,
 		const Mat &kzf,
-		Point &location);
+		Point2f &location);
 
 
 	static void  getPatch(const Mat& image,
