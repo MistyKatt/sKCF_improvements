@@ -166,7 +166,10 @@ void KTrackers::processFrame(const cv::Mat &frame)
 	}
 	_gaussianFilter = filter;
 	   //gaussian window will change based on the scale change
+	
 	KTrackers::gaussian_shaped_labels(sigma, sz, yf);
+	
+	
 	KTrackers::fft2(yf, _params);
 
 	KTrackers::getPatch(frame, _target.center, _target.windowSize, patch);
@@ -748,12 +751,17 @@ void KTrackers::gaussian_shaped_labels(float sigmaW, float sigmaH, const Size &s
 	{
 		if (j >= sz.width) j = 0;
 		cs[i] = exp(wW * tcs[j] * tcs[j]);
+		cout << cs[i] << endl;
+		cout << "end";
+		
 	}
 
 	for (size_t i = 0, j = (h2 - 1); i < sz.height; ++i, ++j)
 	{
 		if (j >= sz.height) j = 0;
 		rs[i] = exp(wH * trs[j] * trs[j]);
+		cout << rs[i] << endl;
+		cout << "end";
 	}
 
 	float *data = (float*)labels.data;
@@ -764,7 +772,9 @@ void KTrackers::gaussian_shaped_labels(float sigmaW, float sigmaH, const Size &s
 			data[i] = rs[cH] * cs[cW];
 		}
 	};
+	
 	gauss(Range(0, sz.width  * sz.height));
+	imshow("3", labels);
 	delete[]rs;
 	delete[]cs;
 	delete[]trs;
@@ -798,6 +808,7 @@ void KTrackers::gaussian_shaped_labels(float sigma, const Size &sz, Mat &labels)
 	{
 		if (j >= sz.width) j = 0;
 		cs[i] = exp(w * tcs[j] * tcs[j]);
+		
 	}
 
 	for (size_t i = 0, j = (h2 - 1); i < sz.height; ++i, ++j)
@@ -836,10 +847,71 @@ void KTrackers::gaussian_shaped_labels(float sigma, const Size &sz, Mat &labels)
 		}
 	};
 	gauss(Range(0, sz.width  * sz.height));
+	//Mat copy; 
+	//labels.copyTo(copy);
+	//imshow("2",copy);
 	delete[]rs;
 	delete[]cs;
 	delete[]trs;
 	delete[]tcs;
+}
+
+void KTrackers::gaussian_shaped_labels(float sigmaW,float sigmaH, const Size &sz, Mat &labels, float angle)
+{
+	int width = sz.width;
+	int height = sz.height;
+	labels.create(sz, CV_32FC1);//Mat::zeros(sz, CV_32FC1); no need for zero initializing
+	Mat temp;
+	labels.copyTo(temp);
+	float wN = (float)(width - 1.) / 2.;
+	float wH = (float)(height - 1.) / 2.;
+	angle = angle / 180 * CV_PI;
+	double cosA = cos(angle);
+	double sinA = sin(angle);
+	float *data = (float*)temp.data;
+	float *newData = (float*)labels.data;
+	for (size_t i = 0; i < height; i++)
+		for (size_t j = 0; j < width; j++)
+		{
+			double y = (cosA*(j - wN) + sinA*(i - wH)) / wN;
+			double x = (cosA*(i - wH) - sinA*(j - wN)) / wH;
+			double e1 = 10*(x) / sigmaW;
+			double e2 = 10*(y) / sigmaH;
+			float result = exp(-.5*(e1*e1 + e2*e2));
+			data[i*width + j] = result;
+		}
+
+	for (int i = 0; i<height; i++)
+		for (int j = 0; j < width; j++)
+		{
+			int tempi = i;
+			int tempj = j;
+			if (tempi >= height / 2)
+			{
+				tempi -= height / 2;
+			}
+			else
+			{
+				if (height % 2 == 0)
+					tempi += height / 2;
+				else
+					tempi += height / 2 + 1;
+
+			}
+			if (tempj >=width / 2)
+			{
+				tempj -= width / 2;
+			}
+			else
+			{
+				if (width % 2 == 0)
+					tempj += width / 2;
+				else
+					tempj += width / 2 + 1;
+			}
+			*(newData + tempi*width + tempj) = *(data + i*width + j);
+		}
+	
 }
 
 
@@ -1165,6 +1237,7 @@ void KTrackers::getFeatures(const Mat& patch,
 
 		}
 	};
+	
 	fPara(Range(0, features.size()));
 	//return features[0].size();
 }
@@ -1539,7 +1612,7 @@ double KFlow::transform(const vector<Point2f> &start,
 		var += (scales[i] - average)*(scales[i] - average);
 	}
 	var = var / count;
-	if (var > 0.01)
+	if (var > 0.001)
 		return 1.0;
 
 	float fSc = (sumOfWeights > 0) ? weightedSum / sumOfWeights : 1.f;
@@ -1598,7 +1671,7 @@ double KFlow::transform2(const vector<Point2f> &start,
 		}
 		//cout << " " << endl;
 	}
-	cout << "end   ";
+	
 	average /= count;
   	for (int i = 0; i < count; i++)
 	{
@@ -1607,7 +1680,7 @@ double KFlow::transform2(const vector<Point2f> &start,
 	var /= count;
 	float test = 0;
 	float testCount = 0;
-	if (var > 0.01)
+	if (var > 0.005)
 		return 0.0;
 	
 	

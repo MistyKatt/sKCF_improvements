@@ -170,6 +170,9 @@ public:
 	Mat _curr;
 	float angle = 0;
 	double _scale;
+	float lastX = 0;
+	float lastY = 0;
+	int counter = 0;
 
 
 	KFlow() :_params(), _pts(), _curr(), _scale(1.)
@@ -247,7 +250,7 @@ public:
 		const Mat &weights,
 		const Size2d &size,
 		const Point2f &shift,
-		const Point2f &center)
+		Point2f &center)
 	{
 		Mat tmp;
 		toGray(frame, tmp);
@@ -258,8 +261,79 @@ public:
 			flowForwardBackward(_curr, tmp, _pts, to, _params, _weights);
 			_scale = transform(_pts, to, _weights, _params);
 			angle = transform2(_pts, to, center, shift, _weights);
+
+			for (int i = 0; i < _pts.size(); i++)
+			{
+				circle(frame, to[i], 2, Scalar(255, 255, 0));
+				circle(frame, _pts[i], 2, Scalar(0, 255, 255));
+			}
+			float xShift = 0, yShift = 0,weights=0;
+			for (int i = 0; i < _pts.size(); i++)
+				 {
+				float oriAngle = atan2f(_pts[i].y - frame.rows / 2+shift.y, _pts[i].x - frame.cols / 2+shift.x);
+				float newAngle = oriAngle + angle;
+				float distance = sqrt((_pts[i].y - frame.rows / 2 +shift.y)*(_pts[i].y - frame.rows / 2 + shift.y) + (_pts[i].x - frame.cols / 2 + shift.x)* (_pts[i].x - frame.cols / 2 + shift.x));
+				float newDis = _scale*distance;
+				float deltaY = newDis*sinf(newAngle);
+				float deltaX = newDis*cosf(newAngle);
+				xShift +=_weights[i]*( to[i].x - deltaX - frame.cols / 2);
+				yShift += _weights[i]*(to[i].y - deltaY - frame.rows / 2);
+				weights += _weights[i];
+				                               //cout << xShift << " " << yShift << " " << endl;
+					                              //xShift += to[i].x - _pts[i].x;
+					                               //yShift += to[i].y - _pts[i].y;
+				circle(frame, to[i], 2, Scalar(255, 0, 0));
+				circle(frame, _pts[i], 2, Scalar(0, 255, 0));
+				}
+			xShift /= weights;
+			yShift /= weights;
+			
+			                     //cout << xShift << " " << yShift << " "<<endl;
+				                      //cout << "end";
+			//center.x += 0.5*xShift;
+			//center.y += 0.5*yShift;
+			
+			                       //Point2f tempC=minAreaRect(to).center;
+				                       //Point2f tempD = minAreaRect(_pts).center;
+				
+				                       //circle(frame, tempC, 5, Scalar(0, 0, 255));
+				                      //circle(frame, tempD, 5, Scalar(0, 0, 255));
+				                       /*
+										+                       if (angle != 0)
+										+                       {
+										+                               if (abs(tempC.x - frame.cols / 2) > 20)
+										+                               {
+										+                                       center.x = (center.x + (tempC.x - frame.cols / 2));
+										+                               }
+										+                               if (abs(tempC.y - frame.rows / 2) > 20)
+										+                               {
+										+                                       center.y = (center.y + (tempC.y - frame.rows / 2));
+										+                               }
+										+                       }
+										
+				                      
+										+                       int m = rand();
+										+                       char file[10];
+										+                       itoa(m, file, 10);
+										+
+										+                       string a(file);
+										+                       a = a + ".jpg";
+										                     
+										+                       imwrite(a, frame);
+										+                       */
+
+			/*
+			char file[10];
+			itoa(counter, file, 10);
+			counter++;
+				string a(file);
+			a = a + ".jpg";
+
+			imwrite(a, frame);
+			*/
 			//angle += angle1*180/CV_PI;
 			//cout << angle << endl;
+			
 			int inliers = 0, outliers = 0;
 			for (size_t i = 0; i < to.size(); ++i)
 			{
@@ -308,18 +382,30 @@ public:
 		h[i] = .5 * ( 1. - cos((2.* CV_PI* i)/(height- 1)));
 		*/
 		// apply gaussian window to it
-
+		Mat mask = Mat::zeros(patch.size(), CV_8UC1);
+		uchar *data = mask.data;
 		for (size_t i = 0; i < width; ++i)
 			for (size_t j = 0; j < height; ++j)
 			{
+				/*
 				gaussianWeights[j*width + i] = *(gaussianData + j*gaussianwidth / 4 + i / 4);
 				gaussianWeights[j*width + i] /= 255;
+				*/
+				int y = (int)(j / 4);
+				int x = (int)(i / 4);
+				if (y >= gaussianheight)
+					 y = gaussianheight - 1;
+				if (x >= gaussianwidth)
+					 x = gaussianwidth - 1;
+				gaussianWeights[j*width + i] = gaussianWindow.at<float>(y, x);
+				if (gaussianWindow.at<float>(y, x) > 0.6)
+					*(data + i + j*width) = 255;
 			}
 
-		
+		//imshow("2", mask);
 
 		int POINTS = 100;
-		double wTHRESHOLD = 0.85;//let more points get into decision
+		double wTHRESHOLD = 0.75;//let more points get into decision
 
 		RNG rng(0xFFFFFFFF);
 		Point tl(max(0.0, patch.cols / 2.0 - floor(size.width / 2.0)),
@@ -327,8 +413,8 @@ public:
 
 		Point br(tl + Point(floor(size.width), floor(size.height)));
 
-		Mat mask = Mat::zeros(patch.size(), CV_8UC1);
-		rectangle(mask, tl, br, Scalar(255), CV_FILLED);
+		//Mat mask = Mat::zeros(patch.size(), CV_8UC1);
+		//rectangle(mask, tl, br, Scalar(255), CV_FILLED);
 		vector<Point2f> _tmp;
 		goodFeaturesToTrack(patch,
 			_tmp,
@@ -649,6 +735,7 @@ private:
 	//    The Gaussian function has spatial bandwidth SIGMA.
 	static void gaussian_shaped_labels(float sigma, const Size &sz, Mat &labels);
 	static void gaussian_shaped_labels(float sigmaW, float sigmaH, const Size &sz, Mat &labels);
+	static void gaussian_shaped_labels(float sigmaW, float sigmaH, const Size &sz, Mat &labels, float angle);
 
 	//  Filtering window
 	static void  gaussianWindow(const Size &sz,
