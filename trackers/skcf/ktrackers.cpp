@@ -19,19 +19,21 @@ the Free Software Foundation, either version 3 of the License, or
 #include <opencv2/opencv.hpp>
 #include <vector>
 
+
 using namespace std;
 using namespace cv;
-void KTrackers::setArea(const RotatedRect &rect)
+void KTrackers::setArea(const RotatedRect &rect,const Rect &boundingBox)
 {
 
 	_target.initiated = false;
-	_target.size = rect.size;
+	_target.size =rect.size;
 	_target.center = rect.center;
 	alpha = rect.angle;
+	
 	//int w = getOptimalDFTSize(floor(_target.size.width  * ( 1 + _params.padding)));//getOptimalDFTSize
 	//int h = getOptimalDFTSize(floor(_target.size.height * ( 1 + _params.padding)));//getOptimalDFTSize
-	int w = (floor(_target.size.width  * (1 + _params.padding)));//getOptimalDFTSize
-	int h = (floor(_target.size.height * (1 + _params.padding)));//getOptimalDFTSize
+	int w = (floor(boundingBox.width* (1 + _params.padding)));//getOptimalDFTSize
+	int h = (floor(boundingBox.height *(1 + _params.padding)));//getOptimalDFTSize
 	_target.windowSize = Size(w, h);
 	_target.model_xf.clear();
 	_target.model_alphaf = Mat();
@@ -90,26 +92,45 @@ void KTrackers::processFrame(const cv::Mat &frame)
 	Mat patch, filter;
 	Mat kf, yf, kzf, alphaf;
 	vector<Mat> xf, zf;
-	//cv::imshow("originMat", frame);
+	bool adjust = false;
 	Size sz(_target.windowSize.width / _params.cell_size,
 		_target.windowSize.height / _params.cell_size);
+	Size2d tsz;
+	if(!_params.rotation&& !_params.scale)
+		tsz=Point2d(min((double)sz.width, _target.size.width/ _params.cell_size),
+			min((double)sz.height, _target.size.height/ _params.cell_size));
+	else
+	{
+		if ((_target.windowSize.width < _target.windowSize.height) && (_target.size.width > _target.size.height))
+		{
+			tsz = Point2d(min((double)sz.width, _target.size.height / _params.cell_size),
+				min((double)sz.height, _target.size.width / _params.cell_size));
+			adjust = true;
 
-	Size2d tsz(min((double)sz.width, _target.size.width / _params.cell_size),
-		min((double)sz.height, _target.size.height / _params.cell_size));
+		}
+		else
+			tsz = Point2d(min((double)sz.width, _target.size.width / _params.cell_size),
+				min((double)sz.height, _target.size.height / _params.cell_size));
+	}
+	
+	double maxVal = 0;
+	//_target.time = clock() - _target.time;
+	//cout << _target.time << endl;
+	//_target.time = clock();
+	
+	_params.kernel_feature = KFeat::DEEP;
 	if (_target.initiated)
 	{
 		Point2f shift;
 		KTrackers::getPatch(frame, _target.center, _target.windowSize, patch);// patch is the windowed target (x2.5 scale) , if near the edge, the patch will randomly get so,e pixel
-																			  //cv::imshow("patch", patch);
-																			  //KTrackers::writeMatData(filter);
+																			  //cv::imshow("patch", patch)																	  //KTrackers::writeMatData(filter);
 		if (_params.scale || _params.rotation)
-			KTrackers::getFeatures(patch, _params, _gaussianFilter, zf);
+			KTrackers::getFeatures(patch, _params, _gaussianFilter, zf,_target.kernels);
 		else
 		{
 			KTrackers::hannWindow(sz, filter);
-			KTrackers::getFeatures(patch, _params, filter, zf);
+			KTrackers::getFeatures(patch, _params, filter, zf,_target.kernels);
 		}
-
 		KTrackers::fft2(zf, _params);
 
 		switch (_params.kernel_type)
@@ -130,10 +151,12 @@ void KTrackers::processFrame(const cv::Mat &frame)
 			break;
 		}
 		}
-		KTrackers::fastDetection(_target.model_alphaf, kzf, shift);
+		maxVal=KTrackers::fastDetection(_target.model_alphaf, kzf, shift);
 		Point2f _shift(_params.cell_size * Point2f(shift.x, shift.y));
-		_target.center = _target.center + _shift;
-		//cout << "center: " << _target.center << endl;
+		if (_target.center.x>0 && _target.center.x<frame.cols&&_target.center.y>0 && _target.center.y<frame.rows)
+			_target.center = _target.center + _shift;
+		//_target.center = _target.center + _shift;
+		//cout << maxVal;
 		if (_params.scale || _params.rotation) // we need to get keypoint pair in scale or rotate estimation
 		{
 			_flow.processFrame(patch, filter, _target.size, _shift, _target.center);
@@ -141,39 +164,42 @@ void KTrackers::processFrame(const cv::Mat &frame)
 			//cout << scale << endl;
 			if (!_params.scale)
 				scale = 1.0;
-			//cout << scale << " ";
-			_target.size = Size2d(min((double)_target.windowSize.width, (_target.size.width * scale)),
+			if(adjust==false)
+				_target.size = Size2d(min((double)_target.windowSize.width, (_target.size.width * scale)),
 				min((double)_target.windowSize.height, (_target.size.height * scale)));
+			else
+				_target.size = Size2d(min((double)_target.windowSize.height, (_target.size.width * scale)),
+					min((double)_target.windowSize.width, (_target.size.height * scale)));
+			
 		}
 
 
 	}
+	
 
 
 	float sigma = sqrt(_target.size.width * _target.size.height) *
 		_params.output_sigma_factor / _params.cell_size;
+	float sigmaW, sigmaH;
 
-	float sigmaW = (float)tsz.width / (float)sz.width;
-	float sigmaH = (float)tsz.height / (float)sz.height;
-	//for scale or rotation, we need different gaussianwindow
-	if (!_params.rotation)
-		KTrackers::gaussianWindow(sz, sigmaW, sigmaH, filter);
-	else
-	{
+	sigmaW = (float)tsz.width / (float)sz.width;
+	sigmaH = (float)tsz.height / (float)sz.height;
+	//for rotation, we need to update angle, for scale ,we never change angle
+	if(_params.rotation)
 		alpha = alpha + _flow.getAngle()*180/CV_PI;
-		//cout << alpha * 180 / CV_PI << endl;
+	if(adjust==false)
  		KTrackers::gaussianWindowRotation(sz, sigmaW, sigmaH, filter, alpha);
-	}
-	_gaussianFilter = filter;
-	   //gaussian window will change based on the scale change
+	else
+		KTrackers::gaussianWindowRotation(sz, sigmaW, sigmaH, filter, alpha+90);
 	
+	_gaussianFilter = filter;
 	KTrackers::gaussian_shaped_labels(sigma, sz, yf);
 	
 	
 	KTrackers::fft2(yf, _params);
 
 	KTrackers::getPatch(frame, _target.center, _target.windowSize, patch);
-
+	
 
 
 	if (_params.scale || _params.rotation)
@@ -189,7 +215,37 @@ void KTrackers::processFrame(const cv::Mat &frame)
 	//        KTrackers::hannWindow(sz, filter);
 	//    }
 
-	KTrackers::getFeatures(patch, _params, filter, xf);
+	// to load alexnet
+
+
+
+
+	if (!_target.initiated)
+	{
+		char line[256];
+		float tempStore = 0;
+		ifstream convW("convfile.txt");
+		while (convW.good())
+		{
+			Mat singleKernel = Mat::zeros(11, 11, CV_32F);
+			for (int i = 0; i < 11; i++)
+			{
+				convW.getline(line, 256);
+				istringstream iss(line);
+				for (int j = 0; j < 11; j++)
+				{
+					iss >> tempStore;
+					singleKernel.at<float>(i, j) = tempStore;
+				}
+			}
+			_target.kernels.push_back(singleKernel);
+		}
+		convW.close();
+
+		
+	
+	}
+	KTrackers::getFeatures(patch, _params, filter, xf, _target.kernels);
 	KTrackers::fft2(xf, _params);
 
 	switch (_params.kernel_type)
@@ -211,16 +267,51 @@ void KTrackers::processFrame(const cv::Mat &frame)
 	}
 	}
 	KTrackers::fastTraining(yf, kf, _params, alphaf);
+	if (_target.initiated)
+	{
+		Mat tmp, tfilter;
+		imshow("gaussian window", filter);
+		normalize(filter, tfilter);
+		tfilter = tfilter * 0.3;
+		resize(patch, tmp, tfilter.size());
+		imshow("origin", tmp);
+		cvtColor(tmp, tmp, CV_BGR2GRAY);
+		tmp.convertTo(tmp, tfilter.type());
+		tmp = tmp.mul(tfilter);
+		resize(tmp, tmp, patch.size());
+		imshow("filter with target", tmp);
+	}
+	//_target.rgbg->apply(frame, fmask);
+	//imshow("mask", fmask);
 	if (!_target.initiated)
 	{
 		_target.model_xf = xf;
 		_target.model_alphaf = alphaf;
 		_target.initiated = true;
-
 	}
 	else
 	{
 		KTrackers::learn(_target.model_xf, xf, _target.model_alphaf, alphaf, _params);
+		/*
+		if (motion.x == 0 && motion.y == 0)
+		{
+			motion = tempMotion;
+			KTrackers::learn(_target.model_xf, xf, _target.model_alphaf, alphaf, _params);
+		}
+		else if(maxVal>0.3)
+		{
+			motion = 0.9*motion + 0.1*tempMotion;
+			KTrackers::learn(_target.model_xf, xf, _target.model_alphaf, alphaf, _params);
+		}
+		else
+		{
+			_target.center -= tempMotion;
+			_target.center +=0.5* motion;
+			
+			
+		}
+		*/
+		
 	}
 
 
@@ -536,7 +627,7 @@ void KTrackers::learn(vector<Mat> &modelXf, const vector<Mat> &xf,
 
 double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point2f &shift)
 {
-	/*
+	
 	Mat response, spatial;
 	mulSpectrums(modelAlphaF, kzf, response, 0, false);
 	idft(response, spatial, DFT_SCALE | DFT_REAL_OUTPUT);
@@ -549,9 +640,9 @@ double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point2f 
 		maxLoc.x -= kzf.cols;
 	shift = maxLoc;
 	return maxVal;
-	*/
 	
 	
+	/*
 	Mat response, spatial;
 	mulSpectrums(modelAlphaF, kzf, response, 0, false);
 	idft(response, spatial, DFT_SCALE | DFT_REAL_OUTPUT);
@@ -594,6 +685,7 @@ double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point2f 
 
 	//minMaxLoc(spatial, &minVal, &maxVal, &minLoc, &maxLoc);
 	minMaxLoc(reshapeSpatial, &minVal, &maxVal, &minLoc, &maxLoc);//the spatial response should be reshaped so that it will looks better and better for our work.
+	//cout << "maxVal:" << maxVal << endl;
 	KTrackers::findLocalMaximum(reshapeSpatial, maxLoc.x, maxLoc.y, realLoc);
 
 	if (spatial.cols % 2 == 0)
@@ -625,7 +717,7 @@ double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point2f 
 	shift.y = maxLoc.y + realLoc.y;
 	//cout << "(x,y): " << shift.x << shift.y << endl;
 	return maxVal;
-	
+	*/
 }
 
 void  KTrackers::gaussianWindow(const Size &sz, float sigmaW, float sigmaH, Mat &filter)
@@ -751,17 +843,12 @@ void KTrackers::gaussian_shaped_labels(float sigmaW, float sigmaH, const Size &s
 	{
 		if (j >= sz.width) j = 0;
 		cs[i] = exp(wW * tcs[j] * tcs[j]);
-		cout << cs[i] << endl;
-		cout << "end";
-		
 	}
 
 	for (size_t i = 0, j = (h2 - 1); i < sz.height; ++i, ++j)
 	{
 		if (j >= sz.height) j = 0;
 		rs[i] = exp(wH * trs[j] * trs[j]);
-		cout << rs[i] << endl;
-		cout << "end";
 	}
 
 	float *data = (float*)labels.data;
@@ -774,7 +861,6 @@ void KTrackers::gaussian_shaped_labels(float sigmaW, float sigmaH, const Size &s
 	};
 	
 	gauss(Range(0, sz.width  * sz.height));
-	imshow("3", labels);
 	delete[]rs;
 	delete[]cs;
 	delete[]trs;
@@ -843,7 +929,7 @@ void KTrackers::gaussian_shaped_labels(float sigma, const Size &sz, Mat &labels)
 		size_t cW = (r.start % sz.width), cH = (r.start / sz.width);
 		for (size_t i = r.start; i != r.end; ++i, ++cW) {
 			if (cW >= sz.width) { cW = 0; ++cH; }
-			data[i] = rs[cH] * cs[cW];
+				data[i] = rs[cH] * cs[cW];
 		}
 	};
 	gauss(Range(0, sz.width  * sz.height));
@@ -1162,11 +1248,12 @@ void rgbNorm(Mat &input, Mat &output)
 void KTrackers::getFeatures(const Mat& patch,
 	const ConfigParams &params,
 	const Mat& windowFunction,
-	vector<Mat> &features)
+	vector<Mat> &features,
+    vector<Mat> &kernels)
 {
 	features.clear();
 
-
+	
 	//assert(patch.type() == CV_32F || patch.type() == CV_32FC3);
 	switch (params.kernel_feature) {
 	case (KFeat::HSV):
@@ -1181,6 +1268,7 @@ void KTrackers::getFeatures(const Mat& patch,
 		hsv.convertTo(floatImg, CV_32F, 1.0 / 255.0);
 		Scalar _mean = mean(floatImg);
 		split(floatImg - _mean, features);
+		cout << "HSV" << endl;
 
 
 		break;
@@ -1195,6 +1283,7 @@ void KTrackers::getFeatures(const Mat& patch,
 		hsv.convertTo(floatImg, CV_32F, 1.0 / 255.0);
 		Scalar _mean = mean(floatImg);
 		split(floatImg - _mean, features);
+		cout << "HLS" << endl;
 		break;
 	}
 	case (KFeat::GRAY):
@@ -1204,6 +1293,7 @@ void KTrackers::getFeatures(const Mat& patch,
 		grayImg.convertTo(floatImg, CV_32F, 1.0 / 255.0);
 		Scalar _mean = mean(floatImg);
 		split(floatImg - _mean, features);
+		cout << "GRAY" << endl;
 		break;
 	}
 	case (KFeat::RGB):
@@ -1212,9 +1302,10 @@ void KTrackers::getFeatures(const Mat& patch,
 		patch.convertTo(floatImg, CV_32F, 1.0 / 255.0);
 		Scalar _mean = mean(floatImg);
 		split(floatImg - _mean, features);
-
+		cout << "RGB" << endl;
 		break;
 	}
+	
 	case (KFeat::FHOG):
 	{
 		Mat grayImg, floatImg;
@@ -1223,8 +1314,92 @@ void KTrackers::getFeatures(const Mat& patch,
 		//KTrackers::writeMatData(floatImg);
 		fhog(floatImg, features, params.cell_size, params.hog_orientations);
 		features.pop_back(); //last channel is only zeros
+		cout << "FHOG" << endl;
 		break;
 	}
+	
+	
+	// This is a new feature extraction way. We use median layer of a deep network as feature rather than hand craft features
+	case (KFeat::DEEP):
+	{
+		
+		
+		vector<Mat> splitImage;
+		Mat szResultb, szResultg, szResultr,resizeImg;
+		double width = patch.cols;
+		double height = patch.rows;
+		//resize(patch, resizeImg, windowFunction.size());
+		resize(patch, resizeImg, Size(0.25*width,0.25*height));
+		split(resizeImg, splitImage);
+		//split(patch, splitImage);
+		//imshow("B", splitImage[0]);
+		//imshow("G", splitImage[1]);
+		//imshow("R", splitImage[2]);
+		int chan = 0;
+		//cv::cuda::setDevice(0);
+		//cv::cuda::GpuMat gpuMat, output, kernel;
+		//Ptr<cuda::Convolution> convolver = cuda::createConvolution(Size(11, 11));
+
+		for (int i = 0; i <60;i++)
+		{
+			Mat fliped,result;
+			flip(kernels[i], fliped, -1);
+			/*
+			fliped.convertTo(fliped, CV_32FC1);
+			splitImage[chan].convertTo(splitImage[chan], CV_32FC1);
+			gpuMat.upload(splitImage[chan]);
+			kernel.upload(fliped);
+			convolver->convolve(gpuMat, kernel, output);
+			output.download(result);
+			*/
+			filter2D(splitImage[chan], result, 1, fliped, Point(-1, -1));
+			
+
+			
+			result.convertTo(result, CV_32F);
+			switch (chan)
+			{
+			case 0:
+				resize(result, szResultb, windowFunction.size());	
+				//szResultb = result;
+				break;
+			case 1:
+				resize(result, szResultg, windowFunction.size());
+				//szResultg = result;
+				break;
+			case 2:
+				resize(result, szResultr, windowFunction.size());
+				//szResultr = result;
+				break;
+			}
+			
+			chan++;
+			if (chan == 3)
+			{
+				Mat szResult;
+				add(szResultb, szResultg, szResult);
+				add(szResultr, szResult, szResult);
+				normalize(szResult, szResult, 1, 0, NORM_L2);
+				features.push_back(szResult);
+				chan = 0;
+			}
+			
+			
+				
+
+		}
+		//imshow("origin", patch);
+		//Mat fshow1, fshow2, fshow3;
+		//resize(features[0], fshow1, windowFunction.size()*4);
+		//resize(features[3], fshow2, windowFunction.size() * 4);
+		//resize(features[6], fshow3, windowFunction.size() * 4);
+		//imshow("k1", fshow1*3);
+		//imshow("k2", fshow2*3);
+		//imshow("k3", fshow3*3);
+		//cout << "DEEP" << endl;
+		break;
+	}
+	
 	default:
 	{
 		break;
@@ -1234,10 +1409,8 @@ void KTrackers::getFeatures(const Mat& patch,
 		for (size_t i = r.start; i != r.end; ++i)
 		{
 			features[i] = features[i].mul(windowFunction);
-
 		}
 	};
-	
 	fPara(Range(0, features.size()));
 	//return features[0].size();
 }
@@ -1594,16 +1767,19 @@ double KFlow::transform(const vector<Point2f> &start,
 			Point2f diffTS = tracked[i] - tracked[j];
 			float dST = norm(diffST);
 			float dTS = norm(diffTS);
-			count++;
 			double ratio = dTS / dST;
 			//if (ratio > 1)
 				//pos++;
 			//if (ratio < 1)
 				//neg++;
-			average += ratio;
-			scales.push_back(ratio);
-			weightedSum += (w1*w1*w2*w2*(ratio));
-			sumOfWeights += w1*w1*w2*w2;
+			if (dST&&dTS > 5)
+			{
+				average += ratio;
+				scales.push_back(ratio);
+				weightedSum += (w1*w1*w2*w2*(ratio));
+				sumOfWeights += w1*w1*w2*w2;
+				count++;
+			}
 		}
 	}
 	average = average / count;
@@ -1650,24 +1826,27 @@ double KFlow::transform2(const vector<Point2f> &start,
 			y0 = start[i].y - start[j].y;
 			x1 = tracked[i].x - tracked[j].x;
 			y1 = tracked[i].y - tracked[j].y;
-			angle1 = arctan2(x0, y0);
-			angle2 = arctan2(x1, y1);
-			count++;
-			if (angle2 - angle1 > CV_PI)
-				angle = angle2 - angle1 - 2 * CV_PI;
-			else if (angle2 - angle1 < -CV_PI)
-				angle = angle2 - angle1 + 2 * CV_PI;
-			else
-				angle = angle2 - angle1;
-			//cout << angle << " ";
-			rotations.push_back(angle);
-			if (angle > 0)
-				pos++;
-			if (angle < 0)
-				neg++;
-			average += angle;
-			rotation = rotation + w1*w2*angle;
-			weightsSum += w1*w2;
+			if (sqrt(x0*x0 + y0*y0) > 5&& sqrt(x1*x1 + y1*y1) > 5)
+			{
+				angle1 = arctan2(x0, y0);
+				angle2 = arctan2(x1, y1);
+				count++;
+				if (angle2 - angle1 > CV_PI)
+					angle = angle2 - angle1 - 2 * CV_PI;
+				else if (angle2 - angle1 < -CV_PI)
+					angle = angle2 - angle1 + 2 * CV_PI;
+				else
+					angle = angle2 - angle1;
+				//cout << angle << " ";
+				rotations.push_back(angle);
+				if (angle > 0)
+					pos++;
+				if (angle < 0)
+					neg++;
+				average += angle;
+				rotation = rotation + w1*w2*angle;
+				weightsSum += w1*w2;
+			}
 		}
 		//cout << " " << endl;
 	}
@@ -1680,7 +1859,7 @@ double KFlow::transform2(const vector<Point2f> &start,
 	var /= count;
 	float test = 0;
 	float testCount = 0;
-	if (var > 0.005)
+	if (var > 0.001)
 		return 0.0;
 	
 	

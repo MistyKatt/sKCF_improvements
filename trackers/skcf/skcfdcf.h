@@ -37,9 +37,9 @@ public:
 	{
 	}
 
-	void setArea(const RotatedRect &rect)
+	void setArea(const RotatedRect &rect,const Rect& boundingBox)
     {
-        kcf.setArea(rect);
+        kcf.setArea(rect,boundingBox);
     }
 	
 	
@@ -54,7 +54,7 @@ public:
                                  rect.tl().y + height/2.0);
         //update target size and location
         Size2f targetSize(width, height);
-        kcf.setArea(RotatedRect(center,targetSize,0));
+        kcf.setArea(RotatedRect(center,targetSize,0),rect);
         kcf.processFrame(image);
     }
 
@@ -82,7 +82,7 @@ public:
 		Size2f targetSize(width,height);
 		RotatedRect rotateRect(center,targetSize,angle);
 		
-		kcf.setArea(rotateRect);
+		kcf.setArea(rotateRect,rect);
 		kcf.processFrame(image);
 	}
     

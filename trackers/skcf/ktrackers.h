@@ -15,7 +15,7 @@ the Free Software Foundation, either version 3 of the License, or
 **************************************************************************************************/
 #ifndef __trackers__ktrackers__
 #define __trackers__ktrackers__
-
+#define UNKNOWN_FLOW_THRESH 1e9 
 #include <vector>
 #include <functional>
 #include <opencv2/core/core.hpp>
@@ -30,7 +30,7 @@ using namespace std;
 // Gaussian & Polynomial == KCF
 // Linear = DCF
 enum class KType { GAUSSIAN, POLYNOMIAL, LINEAR };
-enum class KFeat { GRAY, RGB, FHOG, HLS, HSV };
+enum class KFeat { GRAY, RGB, FHOG, HLS, HSV, DEEP };
 
 struct ConfigParams {
 	float padding = 1.5;  //Extra area surrounding the target
@@ -48,6 +48,7 @@ struct ConfigParams {
 	int   cell_size = 1;
 	bool  scale = false;     //Toggle for scale computation
 	bool rotation = false; //add rotation to this tracker
+	
 
 						   // 0 value uses compact CCS packed format for the spectrum. DFT_COMPLEX_OUTPUT;
 						   //Look for OpenCV dft function flags parameter
@@ -105,7 +106,7 @@ struct RGBConfigParams : public ConfigParams {
 	RGBConfigParams(KType kernel_t, bool scale) : ConfigParams(kernel_t, scale)
 	{
 		kernel_feature = KFeat::RGB;
-		interp_factor = 0.075;
+		interp_factor = 0.02;
 		kernel_sigma = 0.2;
 		kernel_poly_a = 1;
 		kernel_poly_b = 7;
@@ -118,7 +119,7 @@ struct FHOGConfigParams : public ConfigParams {
 	FHOGConfigParams(KType kernel_t, bool scale, bool rotation) : ConfigParams(kernel_t, scale)
 	{
 		kernel_feature = KFeat::FHOG;
-		interp_factor = 0.02;
+		interp_factor = 0.075;
 		kernel_sigma = 0.5;
 		kernel_poly_a = 1;
 		kernel_poly_b = 9;
@@ -137,6 +138,9 @@ struct TObj {
 	Point2f   realCenter;   // the center location estimated from 2d discrete function
 	vector<Mat> model_xf;   // Fourier Domain: model of the tracking obj.
 	Mat     model_alphaf;   // Fourier Domain: Kernel Ridge Regression.
+	float ratio = 1.0;
+	double time = 0;
+	vector<Mat> kernels;
 };
 
 struct KFlowConfigParams
@@ -237,6 +241,7 @@ public:
 	}
 
 
+
 	void extractPoints(const Mat &frame,
 		const Size2d size,
 		Mat &gaussianWindow)
@@ -245,6 +250,89 @@ public:
 		extractPoints(_curr, _params, size, _pts, _weights, gaussianWindow);
 	}
 
+	static void makecolorwheel(vector<Scalar> &colorwheel)
+	{
+		int RY = 15;
+		int YG = 6;
+		int GC = 4;
+		int CB = 11;
+		int BM = 13;
+		int MR = 6;
+
+		int i;
+
+		for (i = 0; i < RY; i++) colorwheel.push_back(Scalar(255, 255 * i / RY, 0));
+		for (i = 0; i < YG; i++) colorwheel.push_back(Scalar(255 - 255 * i / YG, 255, 0));
+		for (i = 0; i < GC; i++) colorwheel.push_back(Scalar(0, 255, 255 * i / GC));
+		for (i = 0; i < CB; i++) colorwheel.push_back(Scalar(0, 255 - 255 * i / CB, 255));
+		for (i = 0; i < BM; i++) colorwheel.push_back(Scalar(255 * i / BM, 0, 255));
+		for (i = 0; i < MR; i++) colorwheel.push_back(Scalar(255, 0, 255 - 255 * i / MR));
+	}
+
+	static void motionToColor(Mat flow, Mat &color)
+	{
+		if (color.empty())
+			color.create(flow.rows, flow.cols, CV_8UC3);
+
+		static vector<Scalar> colorwheel; //Scalar r,g,b  
+		if (colorwheel.empty())
+			makecolorwheel(colorwheel);
+
+		// determine motion range:  
+		float maxrad = -1;
+
+		// Find max flow to normalize fx and fy  
+		for (int i = 0; i < flow.rows; ++i)
+		{
+			for (int j = 0; j < flow.cols; ++j)
+			{
+				Vec2f flow_at_point = flow.at<Vec2f>(i, j);
+				float fx = flow_at_point[0];
+				float fy = flow_at_point[1];
+				if ((fabs(fx) >  UNKNOWN_FLOW_THRESH) || (fabs(fy) >  UNKNOWN_FLOW_THRESH))
+					continue;
+				float rad = sqrt(fx * fx + fy * fy);
+				maxrad = maxrad > rad ? maxrad : rad;
+			}
+		}
+
+		for (int i = 0; i < flow.rows; ++i)
+		{
+			for (int j = 0; j < flow.cols; ++j)
+			{
+				uchar *data = color.data + color.step[0] * i + color.step[1] * j;
+				Vec2f flow_at_point = flow.at<Vec2f>(i, j);
+
+				float fx = flow_at_point[0] / maxrad;
+				float fy = flow_at_point[1] / maxrad;
+				if ((fabs(fx) >  UNKNOWN_FLOW_THRESH) || (fabs(fy) >  UNKNOWN_FLOW_THRESH))
+				{
+					data[0] = data[1] = data[2] = 0;
+					continue;
+				}
+				float rad = sqrt(fx * fx + fy * fy);
+
+				float angle = atan2(-fy, -fx) / CV_PI;
+				float fk = (angle + 1.0) / 2.0 * (colorwheel.size() - 1);
+				int k0 = (int)fk;
+				int k1 = (k0 + 1) % colorwheel.size();
+				float f = fk - k0;
+				//f = 0; // uncomment to see original color wheel  
+
+				for (int b = 0; b < 3; b++)
+				{
+					float col0 = colorwheel[k0][b] / 255.0;
+					float col1 = colorwheel[k1][b] / 255.0;
+					float col = (1 - f) * col0 + f * col1;
+					if (rad <= 1)
+						col = 1 - rad * (1 - col); // increase saturation with radius  
+					else
+						col *= .75; // out of range  
+					data[2 - b] = (int)(255.0 * col);
+				}
+			}
+		}
+	}
 
 	void processFrame(const Mat &frame,
 		const Mat &weights,
@@ -252,7 +340,7 @@ public:
 		const Point2f &shift,
 		Point2f &center)
 	{
-		Mat tmp;
+		Mat tmp,flow,motion2color;
 		toGray(frame, tmp);
 		_scale = 1.0;
 		if (_pts.size() > 0)
@@ -261,7 +349,7 @@ public:
 			flowForwardBackward(_curr, tmp, _pts, to, _params, _weights);
 			_scale = transform(_pts, to, _weights, _params);
 			angle = transform2(_pts, to, center, shift, _weights);
-
+            /*
 			for (int i = 0; i < _pts.size(); i++)
 			{
 				circle(frame, to[i], 2, Scalar(255, 255, 0));
@@ -278,50 +366,14 @@ public:
 				float deltaX = newDis*cosf(newAngle);
 				xShift +=_weights[i]*( to[i].x - deltaX - frame.cols / 2);
 				yShift += _weights[i]*(to[i].y - deltaY - frame.rows / 2);
-				weights += _weights[i];
-				                               //cout << xShift << " " << yShift << " " << endl;
-					                              //xShift += to[i].x - _pts[i].x;
-					                               //yShift += to[i].y - _pts[i].y;
+				weights += _weights[i];                             
 				circle(frame, to[i], 2, Scalar(255, 0, 0));
 				circle(frame, _pts[i], 2, Scalar(0, 255, 0));
 				}
 			xShift /= weights;
 			yShift /= weights;
 			
-			                     //cout << xShift << " " << yShift << " "<<endl;
-				                      //cout << "end";
-			//center.x += 0.5*xShift;
-			//center.y += 0.5*yShift;
-			
-			                       //Point2f tempC=minAreaRect(to).center;
-				                       //Point2f tempD = minAreaRect(_pts).center;
-				
-				                       //circle(frame, tempC, 5, Scalar(0, 0, 255));
-				                      //circle(frame, tempD, 5, Scalar(0, 0, 255));
-				                       /*
-										+                       if (angle != 0)
-										+                       {
-										+                               if (abs(tempC.x - frame.cols / 2) > 20)
-										+                               {
-										+                                       center.x = (center.x + (tempC.x - frame.cols / 2));
-										+                               }
-										+                               if (abs(tempC.y - frame.rows / 2) > 20)
-										+                               {
-										+                                       center.y = (center.y + (tempC.y - frame.rows / 2));
-										+                               }
-										+                       }
-										
-				                      
-										+                       int m = rand();
-										+                       char file[10];
-										+                       itoa(m, file, 10);
-										+
-										+                       string a(file);
-										+                       a = a + ".jpg";
-										                     
-										+                       imwrite(a, frame);
-										+                       */
-
+			   */                 
 			/*
 			char file[10];
 			itoa(counter, file, 10);
@@ -331,8 +383,7 @@ public:
 
 			imwrite(a, frame);
 			*/
-			//angle += angle1*180/CV_PI;
-			//cout << angle << endl;
+		
 			
 			int inliers = 0, outliers = 0;
 			for (size_t i = 0; i < to.size(); ++i)
@@ -367,7 +418,6 @@ public:
 
 		int width = patch.cols;
 		int height = patch.rows;
-		//normalize(gaussianWindow, gaussianWindow,1.0,0.0);
 		int gaussianwidth = gaussianWindow.cols;
 		int gaussianheight = gaussianWindow.rows;
 		float *w = new float[width];
@@ -387,10 +437,6 @@ public:
 		for (size_t i = 0; i < width; ++i)
 			for (size_t j = 0; j < height; ++j)
 			{
-				/*
-				gaussianWeights[j*width + i] = *(gaussianData + j*gaussianwidth / 4 + i / 4);
-				gaussianWeights[j*width + i] /= 255;
-				*/
 				int y = (int)(j / 4);
 				int x = (int)(i / 4);
 				if (y >= gaussianheight)
@@ -398,7 +444,7 @@ public:
 				if (x >= gaussianwidth)
 					 x = gaussianwidth - 1;
 				gaussianWeights[j*width + i] = gaussianWindow.at<float>(y, x);
-				if (gaussianWindow.at<float>(y, x) > 0.6)
+				if (gaussianWindow.at<float>(y, x) > 0.75)
 					*(data + i + j*width) = 255;
 			}
 
@@ -562,7 +608,7 @@ class KTrackers
 public:
 	KTrackers(KType type, KFeat feat, bool scale, bool rotation);
 
-	void setArea(const RotatedRect &rect);
+	void setArea(const RotatedRect &rect,const Rect & boundingBox);
 	void getTrackedArea(vector<Point2f> &pts);
 	void processFrame(const cv::Mat &frame);
 
@@ -600,9 +646,13 @@ protected:
 	TObj         _target;
 	ConfigParams _params;
 	KFlow        _flow;
-	Mat _gaussianFilter;//try to use it in next turn
+	Mat _gaussianFilter,prev;
 	Point2f      _ptl;
 	double alpha = 0;
+	Point2f motion = Point2f(0, 0);
+	
+	
+
 
 
 private:
@@ -628,11 +678,141 @@ private:
 		}
 	}
 
+	static void makecolorwheel(vector<Scalar> &colorwheel)
+	{
+		int RY = 15;
+		int YG = 6;
+		int GC = 4;
+		int CB = 11;
+		int BM = 13;
+		int MR = 6;
+
+		int i;
+
+		for (i = 0; i < RY; i++) colorwheel.push_back(Scalar(255, 255 * i / RY, 0));
+		for (i = 0; i < YG; i++) colorwheel.push_back(Scalar(255 - 255 * i / YG, 255, 0));
+		for (i = 0; i < GC; i++) colorwheel.push_back(Scalar(0, 255, 255 * i / GC));
+		for (i = 0; i < CB; i++) colorwheel.push_back(Scalar(0, 255 - 255 * i / CB, 255));
+		for (i = 0; i < BM; i++) colorwheel.push_back(Scalar(255 * i / BM, 0, 255));
+		for (i = 0; i < MR; i++) colorwheel.push_back(Scalar(255, 0, 255 - 255 * i / MR));
+	}
+
+	static void motionToColor(Mat flow, Mat &color)
+	{
+		if (color.empty())
+			color.create(flow.rows, flow.cols, CV_8UC3);
+
+		static vector<Scalar> colorwheel; //Scalar r,g,b  
+		if (colorwheel.empty())
+			makecolorwheel(colorwheel);
+
+		// determine motion range:  
+		float maxrad = -1;
+
+		// Find max flow to normalize fx and fy  
+		for (int i = 0; i < flow.rows; ++i)
+		{
+			for (int j = 0; j < flow.cols; ++j)
+			{
+				Vec2f flow_at_point = flow.at<Vec2f>(i, j);
+				float fx = flow_at_point[0];
+				float fy = flow_at_point[1];
+				if ((fabs(fx) >  UNKNOWN_FLOW_THRESH) || (fabs(fy) >  UNKNOWN_FLOW_THRESH))
+					continue;
+				float rad = sqrt(fx * fx + fy * fy);
+				maxrad = maxrad > rad ? maxrad : rad;
+			}
+		}
+
+		for (int i = 0; i < flow.rows; ++i)
+		{
+			for (int j = 0; j < flow.cols; ++j)
+			{
+				uchar *data = color.data + color.step[0] * i + color.step[1] * j;
+				Vec2f flow_at_point = flow.at<Vec2f>(i, j);
+
+				float fx = flow_at_point[0] / maxrad;
+				float fy = flow_at_point[1] / maxrad;
+				if ((fabs(fx) >  UNKNOWN_FLOW_THRESH) || (fabs(fy) >  UNKNOWN_FLOW_THRESH))
+				{
+					data[0] = data[1] = data[2] = 0;
+					continue;
+				}
+				float rad = sqrt(fx * fx + fy * fy);
+
+				float angle = atan2(-fy, -fx) / CV_PI;
+				float fk = (angle + 1.0) / 2.0 * (colorwheel.size() - 1);
+				int k0 = (int)fk;
+				int k1 = (k0 + 1) % colorwheel.size();
+				float f = fk - k0;
+				//f = 0; // uncomment to see original color wheel  
+
+				for (int b = 0; b < 3; b++)
+				{
+					float col0 = colorwheel[k0][b] / 255.0;
+					float col1 = colorwheel[k1][b] / 255.0;
+					float col = (1 - f) * col0 + f * col1;
+					if (rad <= 1)
+						col = 1 - rad * (1 - col); // increase saturation with radius  
+					else
+						col *= .75; // out of range  
+					data[2 - b] = (int)(255.0 * col);
+				}
+			}
+		}
+	}
+
+	static void getHist(const Mat &image)
+	{
+		Mat hsv;
+		Rect iRoi(0, 0, image.cols, image.rows);
+		Rect tRoi(image.cols*0.45 , image.rows*0.45,
+			image.cols*0.1, image.rows*0.1);
+		Rect fRoi = iRoi & tRoi;
+		hsv = image(fRoi);
+		// Quantize the hue to 30 levels
+		// and the saturation to 32 levels
+		
+		int histSize= 256;
+		// hue varies from 0 to 179, see cvtColor
+		float range[] = { 0,256};
+		// saturation varies from 0 (black-gray-white) to
+		// 255 (pure spectrum color)
+		
+		const float * ranges = { range };
+		MatND hist;
+		// we compute the histogram from the 0-th and 1-st channels
+		int channels[] = {0};
+
+		calcHist(&hsv, 1, channels, Mat(), // do not use mask
+			hist,1, &histSize,&ranges,
+			true, // the histogram is uniform
+			false);
+		
+
+		Mat histImage(256, 256, CV_8UC3, Scalar(0, 0, 0));
+
+		/*直方图归一化范围[0，histImage.rows]*/
+		normalize(hist, hist, 0, histImage.rows, NORM_MINMAX, -1, Mat());
+
+		/*画直线*/
+		for (int i = 1; i < histSize; ++i)
+		{
+			//cvRound：类型转换。 这里hist为256*1的一维矩阵，存储的是图像中各个灰度级的归一化值  
+			line(histImage, Point(i, 256),
+				Point(i, 256 - cvRound(hist.at<float>(i))),
+				Scalar(0, 0, 255), 2, 8, 0);
+		}
+
+		//imshow("figure_src", hsv);
+		//imshow("figure_hist", histImage);
+	}
 
 	static void getFeatures(const Mat& patch,
 		const ConfigParams &params,
 		const Mat& windowFunction,
-		vector<Mat> &features);
+		vector<Mat> &features,
+	    vector<Mat> &kernels);
 
 	static void getPoints(const Mat& image,
 		const Mat& patch,
