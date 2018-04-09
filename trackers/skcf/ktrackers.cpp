@@ -96,6 +96,7 @@ void KTrackers::processFrame(const cv::Mat &frame)
 	Size sz(_target.windowSize.width / _params.cell_size,
 		_target.windowSize.height / _params.cell_size);
 	Size2d tsz;
+	Point2f tmpMotion = (0, 0);
 	if(!_params.rotation&& !_params.scale)
 		tsz=Point2d(min((double)sz.width, _target.size.width/ _params.cell_size),
 			min((double)sz.height, _target.size.height/ _params.cell_size));
@@ -117,8 +118,7 @@ void KTrackers::processFrame(const cv::Mat &frame)
 	//_target.time = clock() - _target.time;
 	//cout << _target.time << endl;
 	//_target.time = clock();
-	
-	_params.kernel_feature = KFeat::DEEP;
+	//_params.kernel_feature = KFeat::DEEP;
 	if (_target.initiated)
 	{
 		Point2f shift;
@@ -155,6 +155,7 @@ void KTrackers::processFrame(const cv::Mat &frame)
 		Point2f _shift(_params.cell_size * Point2f(shift.x, shift.y));
 		if (_target.center.x>0 && _target.center.x<frame.cols&&_target.center.y>0 && _target.center.y<frame.rows)
 			_target.center = _target.center + _shift;
+		tmpMotion = _shift;
 		//_target.center = _target.center + _shift;
 		//cout << maxVal;
 		if (_params.scale || _params.rotation) // we need to get keypoint pair in scale or rotate estimation
@@ -219,7 +220,9 @@ void KTrackers::processFrame(const cv::Mat &frame)
 
 
 
-
+	/* This is to initialize the AlexNet weights of first layer. These parameters are stored in "convfile.txt"
+	  Note that this file is generated from another python scripts. From the code , we know that for every kernel
+	  The size is 11x11*/
 	if (!_target.initiated)
 	{
 		char line[256];
@@ -267,22 +270,16 @@ void KTrackers::processFrame(const cv::Mat &frame)
 	}
 	}
 	KTrackers::fastTraining(yf, kf, _params, alphaf);
-	if (_target.initiated)
+
+	/* This is to show Mix of Gaussian way to do foreground background substraction
+	Based on the priciple, this way can be only used in static background.
 	{
-		Mat tmp, tfilter;
-		imshow("gaussian window", filter);
-		normalize(filter, tfilter);
-		tfilter = tfilter * 0.3;
-		resize(patch, tmp, tfilter.size());
-		imshow("origin", tmp);
-		cvtColor(tmp, tmp, CV_BGR2GRAY);
-		tmp.convertTo(tmp, tfilter.type());
-		tmp = tmp.mul(tfilter);
-		resize(tmp, tmp, patch.size());
-		imshow("filter with target", tmp);
+		Mat fmask;
+		_target.fgbg->apply(frame, fmask);
+		imshow("mask", fmask);
 	}
-	//_target.rgbg->apply(frame, fmask);
-	//imshow("mask", fmask);
+	*/
+
 	if (!_target.initiated)
 	{
 		_target.model_xf = xf;
@@ -293,19 +290,28 @@ void KTrackers::processFrame(const cv::Mat &frame)
 	{
 		KTrackers::learn(_target.model_xf, xf, _target.model_alphaf, alphaf, _params);
 		/*
+		This part is trying to find a way to solve occlusion. We simply use maxVal as the indicator
+		(which is not the right way). If maxVal is too low, we think a detection failure happens.
+		In that case, we stop updating model until we find the problem solved. 
+
+		So there are two problem remained.
+		1. How to find if this frame failed 
+		2. If we detect a failure, what should we do?
+		This should be remained for future research.
+
 		if (motion.x == 0 && motion.y == 0)
 		{
-			motion = tempMotion;
+			motion = tmpMotion;
 			KTrackers::learn(_target.model_xf, xf, _target.model_alphaf, alphaf, _params);
 		}
 		else if(maxVal>0.3)
 		{
-			motion = 0.9*motion + 0.1*tempMotion;
+			motion = 0.9*motion + 0.1*tmpMotion;
 			KTrackers::learn(_target.model_xf, xf, _target.model_alphaf, alphaf, _params);
 		}
 		else
 		{
-			_target.center -= tempMotion;
+			_target.center -= tmpMotion;
 			_target.center +=0.5* motion;
 			
 			
@@ -319,25 +325,6 @@ void KTrackers::processFrame(const cv::Mat &frame)
 }
 
 
-void KTrackers::writeMatData(const cv::Mat &matrix)
-{
-	if (matrix.dims > 2)
-		return;
-	int rows = matrix.rows;
-	int column = matrix.cols;
-	for (int i = 0; i<rows; i++)
-	{
-		for (int j = 0; j<column; j++)
-		{
-			cout << matrix.row(i).col(j);
-			cout << " ";
-			//不加类型转换用txt打开是字符  
-		}
-		cout << "\n" << endl;
-	}
-	cout << "end of the matrix \n" << endl;
-}
-
 KTrackers::KTrackers(KType type, KFeat feat, bool scale, bool rotation) :
 	_target(), _params(type, scale), _ptl(0., 0.)
 {
@@ -346,6 +333,11 @@ KTrackers::KTrackers(KType type, KFeat feat, bool scale, bool rotation) :
 	case KFeat::FHOG:
 	{
 		_params = FHOGConfigParams(type, scale, rotation);
+		break;
+	}
+	case KFeat::DEEP:
+	{
+		_params = DeepConfigParams(type, scale, rotation);
 		break;
 	}
 	case KFeat::GRAY:
@@ -640,9 +632,10 @@ double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point2f 
 		maxLoc.x -= kzf.cols;
 	shift = maxLoc;
 	return maxVal;
-	
-	
-	/*
+}
+
+double KTrackers::fastDetectionIntepolation(const Mat &modelAlphaF, const Mat &kzf, Point2f &shift)
+{
 	Mat response, spatial;
 	mulSpectrums(modelAlphaF, kzf, response, 0, false);
 	idft(response, spatial, DFT_SCALE | DFT_REAL_OUTPUT);
@@ -652,6 +645,7 @@ double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point2f 
 	spatial.copyTo(reshapeSpatial);
 	float *spaData = (float*)reshapeSpatial.data;
 	float *originData = (float*)spatial.data;
+	// this part is to reshape the matrix.
 	for (int i = 0; i<spatial.rows; i++)
 		for (int j = 0; j < spatial.cols; j++)
 		{
@@ -680,13 +674,12 @@ double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point2f 
 				else
 					tempj += spatial.cols / 2 + 1;
 			}
-			*(spaData + tempi*spatial.cols + tempj) = *(originData + i*spatial.cols + j);
+			*(spaData + tempi * spatial.cols + tempj) = *(originData + i * spatial.cols + j);
 		}
 
-	//minMaxLoc(spatial, &minVal, &maxVal, &minLoc, &maxLoc);
-	minMaxLoc(reshapeSpatial, &minVal, &maxVal, &minLoc, &maxLoc);//the spatial response should be reshaped so that it will looks better and better for our work.
-	//cout << "maxVal:" << maxVal << endl;
-	KTrackers::findLocalMaximum(reshapeSpatial, maxLoc.x, maxLoc.y, realLoc);
+	minMaxLoc(reshapeSpatial, &minVal, &maxVal, &minLoc, &maxLoc); //find the point where we should use the intepolation
+																
+	findLocalMaximum(reshapeSpatial, maxLoc.x, maxLoc.y, realLoc); 
 
 	if (spatial.cols % 2 == 0)
 	{
@@ -704,20 +697,11 @@ double KTrackers::fastDetection(const Mat &modelAlphaF, const Mat &kzf, Point2f 
 	{
 		maxLoc.y -= (spatial.rows / 2 + 1);
 	}
-	//cout << "(x,y): " << maxLoc.x << maxLoc.y << endl;
-
-
-	//if (maxLoc.y > kzf.rows / 2)
-	//    maxLoc.y -= kzf.rows;
-	// if (maxLoc.x > kzf.cols / 2)
-	//   maxLoc.x -= kzf.cols;
-	//shift = maxLoc;
-
 	shift.x = maxLoc.x + realLoc.x;
 	shift.y = maxLoc.y + realLoc.y;
+	//add the  intepolation shift to the original maximum response location
 	//cout << "(x,y): " << shift.x << shift.y << endl;
 	return maxVal;
-	*/
 }
 
 void  KTrackers::gaussianWindow(const Size &sz, float sigmaW, float sigmaH, Mat &filter)
@@ -756,6 +740,8 @@ void  KTrackers::gaussianWindow(const Size &sz, float sigmaW, float sigmaH, Mat 
 	delete[]h;
 }
 
+/* this function will rotate the Gaussian window based on the angle alpha
+ alpha is an anti-clockwise angle*/
 void  KTrackers::gaussianWindowRotation(const Size &sz, float sigmaW, float sigmaH, Mat &filter, double alpha)
 {
 	int width = sz.width;
@@ -793,6 +779,7 @@ void KTrackers::findLocalMaximum(const Mat &response, const int x, const int y, 
 	float dxx;
 	float dyy;
 	float dxy;
+	//this is just like deriv^2D/derivX^2 and so on....
 	dxx = (*(data + x + y*width + 1) + *(data + x + y*width - 1)) - 2 * (*(data + x + y*width));
 	dyy = (*(data + x + (y + 1)*width) - *(data + x + (y - 1)*width)) - 2 * (*(data + x + y*width));
 	dxy = (*(data + x + (y + 1)*width + 1) + *(data + x + (y - 1)*width - 1) - *(data + x + (y - 1)*width + 1) - *(data + x + (y + 1)*width - 1)) / 4;
@@ -806,7 +793,8 @@ void KTrackers::findLocalMaximum(const Mat &response, const int x, const int y, 
 	H_inverse[1] = parameter *(-H[1]);
 	H_inverse[2] = parameter*(-H[2]);
 	H_inverse[3] = parameter*H[0];
-
+	// we can get the inverse of a matrix based on original hessian matrix
+	//above is just to calculate the inverse matrix, H*H_inverse=I.
 	sx = -(H_inverse[0] * dx + H_inverse[1] * dy);
 	sy = -(H_inverse[2] * dx + H_inverse[3] * dy);
 	realLoc.x = sx;
@@ -1314,7 +1302,7 @@ void KTrackers::getFeatures(const Mat& patch,
 		//KTrackers::writeMatData(floatImg);
 		fhog(floatImg, features, params.cell_size, params.hog_orientations);
 		features.pop_back(); //last channel is only zeros
-		cout << "FHOG" << endl;
+		//cout << "FHOG" << endl;
 		break;
 	}
 	
@@ -1323,35 +1311,24 @@ void KTrackers::getFeatures(const Mat& patch,
 	case (KFeat::DEEP):
 	{
 		
+		//cout << "deep";
 		
 		vector<Mat> splitImage;
 		Mat szResultb, szResultg, szResultr,resizeImg;
 		double width = patch.cols;
 		double height = patch.rows;
 		//resize(patch, resizeImg, windowFunction.size());
-		resize(patch, resizeImg, Size(0.25*width,0.25*height));
+		resize(patch, resizeImg, Size(params.rs*width, params.rs*height));
 		split(resizeImg, splitImage);
 		//split(patch, splitImage);
 		//imshow("B", splitImage[0]);
 		//imshow("G", splitImage[1]);
 		//imshow("R", splitImage[2]);
 		int chan = 0;
-		//cv::cuda::setDevice(0);
-		//cv::cuda::GpuMat gpuMat, output, kernel;
-		//Ptr<cuda::Convolution> convolver = cuda::createConvolution(Size(11, 11));
-
-		for (int i = 0; i <60;i++)
+		for (int i = 0; i <params.kNum;i++)
 		{
 			Mat fliped,result;
 			flip(kernels[i], fliped, -1);
-			/*
-			fliped.convertTo(fliped, CV_32FC1);
-			splitImage[chan].convertTo(splitImage[chan], CV_32FC1);
-			gpuMat.upload(splitImage[chan]);
-			kernel.upload(fliped);
-			convolver->convolve(gpuMat, kernel, output);
-			output.download(result);
-			*/
 			filter2D(splitImage[chan], result, 1, fliped, Point(-1, -1));
 			
 
@@ -1756,10 +1733,12 @@ double KFlow::transform(const vector<Point2f> &start,
 	int pos = 0;
 	int neg = 0;
 	vector<float> scales;
+	/*One thing to mention is that we set a new dST&&dTS > 5, this means we don't want to the two points come
+	too close. Every calculated point location is not 100% accurate and it has a error based on Gaussian distribution
+	Too close means that the random Gaussian distribution error will influence the calculation a lot!*/
 	for (int i = pStart; i < (pStart + size); i++)
 	{
 		float w1 = weights[i];
-		//float w = weights[i];
 		for (int j = i + 1; j < (pStart + size); j++)
 		{
 			float w2 = weights[j];
@@ -1768,16 +1747,12 @@ double KFlow::transform(const vector<Point2f> &start,
 			float dST = norm(diffST);
 			float dTS = norm(diffTS);
 			double ratio = dTS / dST;
-			//if (ratio > 1)
-				//pos++;
-			//if (ratio < 1)
-				//neg++;
-			if (dST&&dTS > 5)
+			if (dST&&dTS > 5) 
 			{
 				average += ratio;
 				scales.push_back(ratio);
-				weightedSum += (w1*w1*w2*w2*(ratio));
-				sumOfWeights += w1*w1*w2*w2;
+				weightedSum += (w1*w2*(ratio));
+				sumOfWeights += w1*w2;
 				count++;
 			}
 		}
@@ -1788,6 +1763,8 @@ double KFlow::transform(const vector<Point2f> &start,
 		var += (scales[i] - average)*(scales[i] - average);
 	}
 	var = var / count;
+	/*We also calculate the variance here. This is important because a high variance means that the object may have
+	deformation which our tracker can't handle*/
 	if (var > 0.001)
 		return 1.0;
 
@@ -1798,7 +1775,9 @@ double KFlow::transform(const vector<Point2f> &start,
 	return (fSc + fSc2) / 2;
 }
 
-double KFlow::transform2(const vector<Point2f> &start,
+/* Note that code like if(angle2 - angle1 > CV_PI) is to make sure the code still works well in
+border senario. The angle vector of pi-delta and the angle of vector -pi+delta actually very close*/
+double KFlow::transformRotation(const vector<Point2f> &start,
 	const vector<Point2f> &tracked,
 	const Point2f &center,
 	const Point2f &shift,
@@ -1810,11 +1789,6 @@ double KFlow::transform2(const vector<Point2f> &start,
 	float average = 0;
 	float var = 0;
 	int count = 0;
-	int pos = 0;
-	int neg = 0;
-	//originCenter.x = roundf(originCenter.x);
-	//originCenter.y = roundf(originCenter.y);
-	//cout << originCenter << endl;
 	for (int i = 0; i < start.size(); i++)
 	{
 		float w1 = weights[i];
@@ -1831,7 +1805,7 @@ double KFlow::transform2(const vector<Point2f> &start,
 				angle1 = arctan2(x0, y0);
 				angle2 = arctan2(x1, y1);
 				count++;
-				if (angle2 - angle1 > CV_PI)
+				if (angle2 - angle1 > CV_PI) 
 					angle = angle2 - angle1 - 2 * CV_PI;
 				else if (angle2 - angle1 < -CV_PI)
 					angle = angle2 - angle1 + 2 * CV_PI;
@@ -1839,16 +1813,11 @@ double KFlow::transform2(const vector<Point2f> &start,
 					angle = angle2 - angle1;
 				//cout << angle << " ";
 				rotations.push_back(angle);
-				if (angle > 0)
-					pos++;
-				if (angle < 0)
-					neg++;
 				average += angle;
 				rotation = rotation + w1*w2*angle;
 				weightsSum += w1*w2;
 			}
 		}
-		//cout << " " << endl;
 	}
 	
 	average /= count;
@@ -1857,8 +1826,6 @@ double KFlow::transform2(const vector<Point2f> &start,
 		var += (rotations[i] - average)*(rotations[i] - average);
 	}
 	var /= count;
-	float test = 0;
-	float testCount = 0;
 	if (var > 0.001)
 		return 0.0;
 	
@@ -1873,7 +1840,6 @@ double KFlow::transform2(const vector<Point2f> &start,
 	}
 	else
 		rotation = 0;
-	//cout << "rotation:" << rotation<<endl;
 	return rotation;
 }
 

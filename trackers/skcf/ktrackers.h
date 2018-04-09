@@ -48,6 +48,8 @@ struct ConfigParams {
 	int   cell_size = 1;
 	bool  scale = false;     //Toggle for scale computation
 	bool rotation = false; //add rotation to this tracker
+	float rs = 0.5; //rescale ratio in deep feature
+	int kNum = 30; //number of kernels in deep feature
 	
 
 						   // 0 value uses compact CCS packed format for the spectrum. DFT_COMPLEX_OUTPUT;
@@ -57,7 +59,7 @@ struct ConfigParams {
 
 	ConfigParams(KType ktype, bool compScale) :
 		padding(1.5), lambda(1e-4), output_sigma_factor(0.1),
-		kernel_feature(KFeat::GRAY), kernel_type(ktype), kernel_sigma(0.2),
+		kernel_feature(KFeat::DEEP), kernel_type(ktype), kernel_sigma(0.2),
 		kernel_poly_a(1), kernel_poly_b(7), interp_factor(0.075), hog_orientations(1),
 		cell_size(1), scale(compScale), flags(0)
 	{}
@@ -129,6 +131,21 @@ struct FHOGConfigParams : public ConfigParams {
 	}
 };
 
+struct DeepConfigParams : public ConfigParams {
+	DeepConfigParams(KType kernel_t, bool scale, bool rotation) : ConfigParams(kernel_t, scale)
+	{
+		kernel_feature = KFeat::DEEP;
+		interp_factor = 0.075;
+		kernel_sigma = 0.5;
+		kernel_poly_a = 1;
+		kernel_poly_b = 9;
+		cell_size = 4;
+		rs = 0.5;
+		kNum = 30;
+		this->rotation = rotation;
+	}
+};
+
 /* Internal representation of the object by size and location */
 struct TObj {
 	bool       initiated = false;
@@ -141,6 +158,7 @@ struct TObj {
 	float ratio = 1.0;
 	double time = 0;
 	vector<Mat> kernels;
+	Ptr<BackgroundSubtractor> fgbg= createBackgroundSubtractorMOG2();
 };
 
 struct KFlowConfigParams
@@ -196,7 +214,7 @@ public:
 		else
 			input.copyTo(output);
 	}
-
+	/* A function to calculate the angle of a vector*/
 	static float arctan2(double x, double y)
 	{
 		double angle;
@@ -250,6 +268,9 @@ public:
 		extractPoints(_curr, _params, size, _pts, _weights, gaussianWindow);
 	}
 
+	/*This function is to visualize the dense optical flow, it is an optional function and
+	  it is not written by me
+	  reference: https://blog.csdn.net/zouxy09/article/details/8683859 */
 	static void makecolorwheel(vector<Scalar> &colorwheel)
 	{
 		int RY = 15;
@@ -334,6 +355,18 @@ public:
 		}
 	}
 
+	/* The optional function to show the key points pair, actually
+	These keypoints will be drawn as very small circles.*/
+	static void showKeypoints(Mat frame, vector<Point2f> from, vector<Point2f> to)
+	{
+		for (int i = 0; i < from.size(); i++)
+		{
+			circle(frame, from[i], 2, Scalar(255, 255, 0));
+			circle(frame, to[i], 2, Scalar(0, 255, 255));
+		}
+		imshow("keypoints", frame);
+	}
+
 	void processFrame(const Mat &frame,
 		const Mat &weights,
 		const Size2d &size,
@@ -348,43 +381,8 @@ public:
 			vector<Point2f> to;
 			flowForwardBackward(_curr, tmp, _pts, to, _params, _weights);
 			_scale = transform(_pts, to, _weights, _params);
-			angle = transform2(_pts, to, center, shift, _weights);
-            /*
-			for (int i = 0; i < _pts.size(); i++)
-			{
-				circle(frame, to[i], 2, Scalar(255, 255, 0));
-				circle(frame, _pts[i], 2, Scalar(0, 255, 255));
-			}
-			float xShift = 0, yShift = 0,weights=0;
-			for (int i = 0; i < _pts.size(); i++)
-				 {
-				float oriAngle = atan2f(_pts[i].y - frame.rows / 2+shift.y, _pts[i].x - frame.cols / 2+shift.x);
-				float newAngle = oriAngle + angle;
-				float distance = sqrt((_pts[i].y - frame.rows / 2 +shift.y)*(_pts[i].y - frame.rows / 2 + shift.y) + (_pts[i].x - frame.cols / 2 + shift.x)* (_pts[i].x - frame.cols / 2 + shift.x));
-				float newDis = _scale*distance;
-				float deltaY = newDis*sinf(newAngle);
-				float deltaX = newDis*cosf(newAngle);
-				xShift +=_weights[i]*( to[i].x - deltaX - frame.cols / 2);
-				yShift += _weights[i]*(to[i].y - deltaY - frame.rows / 2);
-				weights += _weights[i];                             
-				circle(frame, to[i], 2, Scalar(255, 0, 0));
-				circle(frame, _pts[i], 2, Scalar(0, 255, 0));
-				}
-			xShift /= weights;
-			yShift /= weights;
-			
-			   */                 
-			/*
-			char file[10];
-			itoa(counter, file, 10);
-			counter++;
-				string a(file);
-			a = a + ".jpg";
-
-			imwrite(a, frame);
-			*/
-		
-			
+			angle = transformRotation(_pts, to, center, shift, _weights);
+			//showKeypoints(frame, _pts, to); you can see keypoints if you wish
 			int inliers = 0, outliers = 0;
 			for (size_t i = 0; i < to.size(); ++i)
 			{
@@ -432,6 +430,10 @@ public:
 		h[i] = .5 * ( 1. - cos((2.* CV_PI* i)/(height- 1)));
 		*/
 		// apply gaussian window to it
+
+		/*We already have a rotated Gaussian window here ,so we need to extract the Mat data into a
+		 "Two dimention" Array and the mask. A mask means the interesting area that we want to get the 
+		 Key points, so we are only interested in the keypoints with big weights (from the forground) */
 		Mat mask = Mat::zeros(patch.size(), CV_8UC1);
 		uchar *data = mask.data;
 		for (size_t i = 0; i < width; ++i)
@@ -448,7 +450,6 @@ public:
 					*(data + i + j*width) = 255;
 			}
 
-		//imshow("2", mask);
 
 		int POINTS = 100;
 		double wTHRESHOLD = 0.75;//let more points get into decision
@@ -555,7 +556,8 @@ public:
 		const vector<float> &weights,
 		const KFlowConfigParams &p);
 
-	static double transform2(const vector<Point2f> &start,
+	/* Return the object rotation angle change in this frame*/
+	static double transformRotation(const vector<Point2f> &start,
 		const vector<Point2f> &tracked,
 		const Point2f &center,
 		const Point2f &shift,
@@ -896,6 +898,13 @@ private:
 		const Mat &kzf,
 		Point2f &location);
 
+	/*The maximum response matrix is originally at the top-left corner, we reshape it so that the maximum is 
+	that the center of the matrix. In that case, we can use intepolation to get a better location shift 
+	compared with original result*/
+	static double fastDetectionIntepolation(const Mat &modelAlphaF,
+		const Mat &kzf,
+		Point2f &location);
+
 
 	static void  getPatch(const Mat& image,
 		const Point2f &loc,
@@ -948,6 +957,7 @@ private:
 	//  Sum all the real values of the spectrum. 
 	static double sumSpectrum(const Mat &mat, const ConfigParams &params);
 
+	//this is the intepolation process, based on taylor expansion with the point we want to use the expansion
 	static void findLocalMaximum(const Mat &response, const int x, const int y, Point2d &realLoc);
 };
 

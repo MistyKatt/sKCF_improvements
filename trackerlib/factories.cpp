@@ -200,7 +200,7 @@ Ptr<Tracker> TrackerFactory::createTracker(const string &method, const int argc,
         const String keys =
         "{? usage           |       | print this message}"
         "{t type            |g      | correlation type: g(gaussian), p(polynomial), l(linear)}"
-        "{f feat            |fhog   | feature type: fhog, gray, rgb, hsv, hls}"
+        "{f feat            |deep   | feature type: fhog, gray, rgb, hsv, hls}"
         "{s scale           |       | turn on scale estimation}"
 		"{r rotation        |       | turn on rotation estimation}";
         
@@ -228,8 +228,9 @@ Ptr<Tracker> TrackerFactory::createTracker(const string &method, const int argc,
 			feat = KFeat::FHOG;
         else
             feat = KFeat::DEEP;
-        
-        tracker = new SKCFDCF(KType::GAUSSIAN, KFeat::FHOG, parser.has("s"), parser.has("r"));
+		
+		
+        tracker = new SKCFDCF(KType::GAUSSIAN, feat, parser.has("s"), parser.has("r"));
         
         if (parser.has("?"))
         {
