@@ -153,8 +153,9 @@ void KTrackers::processFrame(const cv::Mat &frame)
 		}
 		maxVal=KTrackers::fastDetection(_target.model_alphaf, kzf, shift);
 		Point2f _shift(_params.cell_size * Point2f(shift.x, shift.y));
-		if (_target.center.x>0 && _target.center.x<frame.cols&&_target.center.y>0 && _target.center.y<frame.rows)
-			_target.center = _target.center + _shift;
+		_target.center = _target.center + _shift;
+		if (_target.center.x<0 || _target.center.x>frame.cols||_target.center.y<0 || _target.center.y>frame.rows)
+			_target.center = _target.center -_shift;
 		tmpMotion = _shift;
 		//_target.center = _target.center + _shift;
 		//cout << maxVal;
@@ -1302,7 +1303,6 @@ void KTrackers::getFeatures(const Mat& patch,
 		//KTrackers::writeMatData(floatImg);
 		fhog(floatImg, features, params.cell_size, params.hog_orientations);
 		features.pop_back(); //last channel is only zeros
-		//cout << "FHOG" << endl;
 		break;
 	}
 	
@@ -1311,7 +1311,6 @@ void KTrackers::getFeatures(const Mat& patch,
 	case (KFeat::DEEP):
 	{
 		
-		//cout << "deep";
 		
 		vector<Mat> splitImage;
 		Mat szResultb, szResultg, szResultr,resizeImg;
@@ -1330,9 +1329,6 @@ void KTrackers::getFeatures(const Mat& patch,
 			Mat fliped,result;
 			flip(kernels[i], fliped, -1);
 			filter2D(splitImage[chan], result, 1, fliped, Point(-1, -1));
-			
-
-			
 			result.convertTo(result, CV_32F);
 			switch (chan)
 			{
